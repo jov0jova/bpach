@@ -1,0 +1,119 @@
+{% extends "base.html" %}
+{% block title %}Backtest – {{ session.name }}{% endblock %}
+
+{% block content %}
+<div class="mt-3 mb-4">
+  <h2 class="mb-0"><i class="bi bi-play-circle-fill me-2 text-info"></i>Phase 6 — Backtest + Walk-Forward</h2>
+  <small class="text-muted">Run a professional-grade backtest with 5-fold walk-forward optimization across all pairs.</small>
+</div>
+
+<div class="row g-4">
+  <div class="col-lg-4">
+    <div class="card caf-card">
+      <div class="card-header caf-card-header"><i class="bi bi-rocket-takeoff me-2"></i>Launch Backtest</div>
+      <div class="card-body">
+        <div class="mb-3 p-2 bg-dark rounded border">
+          <div class="small text-muted mb-1">Using strategy from Phase 4.</div>
+          <div class="small text-muted">Walk-Forward: 5 splits, 70/30 train/test</div>
+          <div class="small text-muted">Optuna OOS validation enabled</div>
+        </div>
+        <form method="post" action="{{ url_for('backtest.run', session_id=session.id) }}">
+          <button type="submit" class="btn btn-info w-100 text-dark fw-bold"
+                  {% if task and task.status == 'running' %}disabled{% endif %}>
+            <i class="bi bi-play-fill me-1"></i>
+            {% if task and task.status == 'running' %}Running…{% else %}Run Backtest{% endif %}
+          </button>
+        </form>
+        <small class="text-muted d-block mt-2">
+          <i class="bi bi-info-circle me-1"></i>
+          Make sure data (Ph.2) and indicators (Ph.5) are ready first.
+        </small>
+      </div>
+    </div>
+
+    <!-- Progress -->
+    <div class="card caf-card mt-3">
+      <div class="card-header caf-card-header"><i class="bi bi-activity me-2"></i>Progress</div>
+      <div class="card-body"
+           {% if task and task.status == 'running' %}
+           hx-get="{{ url_for('backtest.status', session_id=session.id) }}"
+           hx-trigger="every 3s"
+           hx-swap="innerHTML"
+           {% endif %}>
+        {% include "partials/task_progress.html" %}
+      </div>
+    </div>
+  </div>
+
+  <div class="col-lg-8">
+    {% if runs %}
+    <div class="card caf-card">
+      <div class="card-header caf-card-header d-flex justify-content-between">
+        <span><i class="bi bi-table me-2"></i>Backtest History</span>
+        <span class="badge bg-secondary">{{ runs | length }} runs</span>
+      </div>
+      <div class="card-body p-0">
+        <div class="table-responsive">
+          <table class="table caf-table table-sm mb-0">
+            <thead>
+              <tr>
+                <th>Status</th>
+                <th>Trades</th>
+                <th class="text-end">Win Rate</th>
+                <th class="text-end">PF</th>
+                <th class="text-end">Sharpe</th>
+                <th class="text-end">Max DD</th>
+                <th class="text-end">IS Ret.</th>
+                <th class="text-end">OOS Ret.</th>
+                <th>Time</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for run in runs %}
+              <tr>
+                <td>
+                  <span class="badge bg-{{ 'success' if run.status == 'done' else 'danger' if run.status == 'error' else 'warning text-dark' }}">
+                    {{ run.status }}
+                  </span>
+                </td>
+                <td>{{ run.total_trades }}</td>
+                <td class="text-end">{{ '%.1f%%' | format(run.win_rate * 100) }}</td>
+                <td class="text-end">{{ '%.2f' | format(run.profit_factor) }}</td>
+                <td class="text-end {{ 'text-success' if run.sharpe_ratio > 1 else 'text-muted' }}">
+                  {{ '%.2f' | format(run.sharpe_ratio) }}</td>
+                <td class="text-end text-danger">{{ '%.1f%%' | format(run.max_drawdown) }}</td>
+                <td class="text-end {{ 'text-success' if run.total_return > 0 else 'text-danger' }}">
+                  {{ '%+.1f%%' | format(run.total_return) }}</td>
+                <td class="text-end {{ 'text-success' if run.oos_return > 0 else 'text-danger' }}">
+                  {{ '%+.1f%%' | format(run.oos_return) }}</td>
+                <td><small class="text-muted">{{ run.created_at.strftime('%m-%d %H:%M') if run.created_at else '—' }}</small></td>
+                <td>
+                  {% if run.status == 'done' %}
+                  <div class="d-flex gap-1">
+                    <a href="{{ url_for('backtest.result', session_id=session.id, run_id=run.id) }}"
+                       class="btn btn-xs btn-outline-secondary">Results</a>
+                    <a href="{{ url_for('analysis.run', session_id=session.id) }}"
+                       class="btn btn-xs btn-outline-primary"
+                       hx-post="{{ url_for('analysis.run', session_id=session.id) }}"
+                       hx-vals='{"run_id": "{{ run.id }}"}'
+                       onclick="this.closest('form') || (this.setAttribute('href','#'))">Analyse</a>
+                  </div>
+                  {% endif %}
+                </td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+    {% else %}
+    <div class="text-center py-5 text-muted">
+      <i class="bi bi-play-circle display-3"></i>
+      <p class="mt-3">No backtest runs yet. Launch your first backtest.</p>
+    </div>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}

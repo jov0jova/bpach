@@ -1,0 +1,32 @@
+{% if pair %}
+<tr id="pair-row-{{ pair.symbol | replace('/', '_') }}"
+    class="{{ 'opacity-50' if pair.excluded else '' }}">
+  <td class="fw-semibold">{{ pair.symbol }}</td>
+  <td><span class="badge bg-dark">{{ pair.base_asset }}</span></td>
+  <td>{{ '{:,.0f}'.format(pair.volume_24h) if pair.volume_24h else '—' }}</td>
+  <td>{{ pair.candle_count or '—' }}</td>
+  <td>
+    <small class="text-muted">
+      {{ pair.data_start.strftime('%Y-%m-%d') if pair.data_start else '—' }}
+      {% if pair.data_end %} → {{ pair.data_end.strftime('%Y-%m-%d') }}{% endif %}
+    </small>
+  </td>
+  <td>
+    <form method="post"
+          action="{{ url_for('pairlist.toggle_pair', session_id=session_id) }}"
+          hx-post="{{ url_for('pairlist.toggle_pair', session_id=session_id) }}"
+          hx-target="#pair-row-{{ pair.symbol | replace('/', '_') }}"
+          hx-swap="outerHTML">
+      <input type="hidden" name="symbol" value="{{ pair.symbol }}">
+      <input type="hidden" name="excluded" value="{{ 'false' if pair.excluded else 'true' }}">
+      <button class="btn btn-xs {{ 'btn-outline-success' if pair.excluded else 'btn-outline-danger' }}">
+        {% if pair.excluded %}
+        <i class="bi bi-check-circle me-1"></i>Include
+        {% else %}
+        <i class="bi bi-x-circle me-1"></i>Exclude
+        {% endif %}
+      </button>
+    </form>
+  </td>
+</tr>
+{% endif %}

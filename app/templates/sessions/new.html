@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% block title %}New Session – CryptoAlgoFinder{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center mt-3">
+  <div class="col-lg-7">
+    <h2 class="mb-1"><i class="bi bi-plus-circle me-2 text-primary"></i>New Session</h2>
+    <p class="text-muted mb-4">Configure the exchange and timeframes for this research session.</p>
+
+    <form method="post" class="caf-form">
+      <!-- Session Name -->
+      <div class="mb-3">
+        <label class="form-label">Session Name</label>
+        <input type="text" name="name" class="form-control caf-input"
+               placeholder="e.g. Binance BTC/USDT Momentum Study" required maxlength="120">
+      </div>
+
+      <!-- Exchange -->
+      <div class="mb-3">
+        <label class="form-label">Exchange</label>
+        <select name="exchange" class="form-select caf-input">
+          {% for ex in exchanges %}
+          <option value="{{ ex }}" {{ 'selected' if ex == 'binance' }}>{{ ex | title }}</option>
+          {% endfor %}
+        </select>
+        <small class="text-muted">Data is fetched from the exchange's public OHLCV API (no API key needed).</small>
+      </div>
+
+      <!-- Quote Asset -->
+      <div class="mb-3">
+        <label class="form-label">Quote Asset</label>
+        <input type="text" name="quote_asset" class="form-control caf-input"
+               value="USDT" placeholder="USDT" maxlength="10">
+        <small class="text-muted">Only pairs quoted in this asset will be downloaded.</small>
+      </div>
+
+      <!-- Timeframes -->
+      <div class="mb-4">
+        <label class="form-label">Timeframes</label>
+        <div class="d-flex flex-wrap gap-2">
+          {% for tf in timeframe_choices %}
+          <div class="form-check form-check-inline caf-tf-check">
+            <input class="form-check-input" type="checkbox" name="timeframes"
+                   value="{{ tf }}" id="tf_{{ tf }}"
+                   {{ 'checked' if tf in ['15m', '1h', '4h'] }}>
+            <label class="form-check-label" for="tf_{{ tf }}">{{ tf }}</label>
+          </div>
+          {% endfor %}
+        </div>
+        <small class="text-muted">Select at least one. The first timeframe will be the primary for backtesting.</small>
+      </div>
+
+      <div class="d-flex gap-2">
+        <button type="submit" class="btn btn-primary px-4">
+          <i class="bi bi-check-lg me-1"></i>Create Session
+        </button>
+        <a href="{{ url_for('sessions.list_sessions') }}" class="btn btn-outline-secondary">
+          Cancel
+        </a>
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}

@@ -1,0 +1,162 @@
+{% extends "base.html" %}
+{% block title %}Analysis Results – {{ session.name }}{% endblock %}
+
+{% block content %}
+<div class="mt-3 mb-4 d-flex justify-content-between align-items-start">
+  <div>
+    <h2 class="mb-0"><i class="bi bi-bar-chart-steps me-2 text-warning"></i>Analysis Results</h2>
+    <small class="text-muted">{{ total_winners }} winning trades reverse-engineered</small>
+  </div>
+  <a href="{{ url_for('analysis.analysis_view', session_id=session.id) }}"
+     class="btn btn-sm btn-outline-secondary">
+    <i class="bi bi-arrow-left me-1"></i>Back
+  </a>
+</div>
+
+<!-- Key indicator stats -->
+<div class="card caf-card mb-4">
+  <div class="card-header caf-card-header">
+    <i class="bi bi-table me-2"></i>Indicator Values at Winning Entries
+    <small class="text-muted ms-2">({{ primary_tf }} timeframe)</small>
+  </div>
+  <div class="card-body p-0">
+    <div class="table-responsive">
+      <table class="table caf-table table-sm mb-0">
+        <thead>
+          <tr>
+            <th>Indicator</th>
+            <th class="text-end">Mean</th>
+            <th class="text-end">Std Dev</th>
+            <th class="text-end">P25</th>
+            <th class="text-end">Median</th>
+            <th class="text-end">P75</th>
+            <th class="text-end">Min</th>
+            <th class="text-end">Max</th>
+            <th class="text-end">Count</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for ind, stats in key_stats %}
+          <tr>
+            <td><code class="text-primary">{{ ind }}</code></td>
+            <td class="text-end">{{ '%.3f' | format(stats.mean) }}</td>
+            <td class="text-end text-muted">{{ '%.3f' | format(stats.std) }}</td>
+            <td class="text-end text-muted">{{ '%.3f' | format(stats.p25) }}</td>
+            <td class="text-end fw-bold">{{ '%.3f' | format(stats.p50) }}</td>
+            <td class="text-end text-muted">{{ '%.3f' | format(stats.p75) }}</td>
+            <td class="text-end text-muted">{{ '%.3f' | format(stats.min) }}</td>
+            <td class="text-end text-muted">{{ '%.3f' | format(stats.max) }}</td>
+            <td class="text-end text-muted">{{ stats.count }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<div class="row g-4 mb-4">
+  <!-- Win rate conditions chart -->
+  {% if wr_chart %}
+  <div class="col-lg-6">
+    <div class="card caf-card h-100">
+      <div class="card-header caf-card-header">
+        <i class="bi bi-bar-chart-horizontal me-2"></i>Condition Frequency in Winners
+      </div>
+      <div class="card-body p-0">
+        <div id="wr-chart"></div>
+      </div>
+    </div>
+  </div>
+  {% endif %}
+
+  <!-- Heatmap -->
+  {% if heatmap_chart %}
+  <div class="col-lg-6">
+    <div class="card caf-card h-100">
+      <div class="card-header caf-card-header">
+        <i class="bi bi-grid-3x3 me-2"></i>Indicator Correlation Heatmap
+      </div>
+      <div class="card-body p-0">
+        <div id="heatmap-chart"></div>
+      </div>
+    </div>
+  </div>
+  {% endif %}
+</div>
+
+<!-- Winning trade list -->
+<div class="card caf-card">
+  <div class="card-header caf-card-header d-flex justify-content-between">
+    <span><i class="bi bi-list-stars me-2"></i>Winning Entries</span>
+    <span class="badge bg-success">{{ analyses | length }}</span>
+  </div>
+  <div class="card-body p-0">
+    <div class="table-responsive" style="max-height: 400px; overflow-y:auto">
+      <table class="table caf-table table-sm mb-0">
+        <thead class="sticky-top">
+          <tr>
+            <th>Symbol</th>
+            <th>TF</th>
+            <th>Entry Time</th>
+            <th>RSI 14</th>
+            <th>ADX 14</th>
+            <th>MACD Hist</th>
+            <th>Patterns</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for a in analyses %}
+          {% set snap = a.indicator_snapshot.get(primary_tf, a.indicator_snapshot | first_value) if a.indicator_snapshot else {} %}
+          <tr>
+            <td class="fw-semibold">{{ a.symbol }}</td>
+            <td>{{ a.timeframe }}</td>
+            <td><small>{{ a.entry_time }}</small></td>
+            <td>
+              {% if snap.get('RSI_14') %}
+              <span class="badge bg-{{ 'success' if snap.RSI_14 < 40 else 'warning text-dark' if snap.RSI_14 < 60 else 'danger' }}">
+                {{ '%.1f' | format(snap.RSI_14) }}
+              </span>
+              {% else %}—{% endif %}
+            </td>
+            <td>{{ '%.1f' | format(snap.get('ADX_14', 0)) if snap.get('ADX_14') else '—' }}</td>
+            <td class="{{ 'text-success' if snap.get('MACD_hist', 0) > 0 else 'text-danger' }}">
+              {{ '%.4f' | format(snap.get('MACD_hist', 0)) if snap.get('MACD_hist') is not none else '—' }}
+            </td>
+            <td>
+              {% for k, v in a.pattern_flags.items() %}
+              {% if v != 0 %}
+              <span class="badge bg-{{ 'success' if v > 0 else 'danger' }} me-1" style="font-size:10px">
+                {{ k.split('_', 2)[-1] if '_' in k else k }}
+              </span>
+              {% endif %}
+              {% endfor %}
+            </td>
+            <td>
+              <a href="{{ url_for('analysis.trade_detail', session_id=session.id, trade_id=a.trade_id, run_id=run.id) }}"
+                 class="btn btn-xs btn-outline-primary">Chart</a>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+{% if wr_chart %}
+<script>
+  var wrData = {{ wr_chart | safe }};
+  Plotly.newPlot('wr-chart', wrData.data, wrData.layout, {responsive:true, displayModeBar:false});
+</script>
+{% endif %}
+{% if heatmap_chart %}
+<script>
+  var hmData = {{ heatmap_chart | safe }};
+  Plotly.newPlot('heatmap-chart', hmData.data, hmData.layout, {responsive:true, displayModeBar:false});
+</script>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,150 @@
+{% extends "base.html" %}
+{% block title %}Algo Finder – {{ session.name }}{% endblock %}
+
+{% block content %}
+<div class="mt-3 mb-4">
+  <h2 class="mb-0"><i class="bi bi-search-heart-fill me-2 text-danger"></i>Phase 8 — Algo Finder</h2>
+  <small class="text-muted">Automatically discover the best indicator combinations using Optuna + walk-forward OOS validation.</small>
+</div>
+
+<div class="row g-4">
+  <div class="col-lg-4">
+    <div class="card caf-card">
+      <div class="card-header caf-card-header"><i class="bi bi-sliders me-2"></i>Search Settings</div>
+      <div class="card-body">
+        <form method="post" action="{{ url_for('algofinder.run', session_id=session.id) }}">
+          <div class="mb-3">
+            <label class="form-label small">Number of Trials</label>
+            <input type="number" name="n_trials" class="form-control caf-input form-control-sm"
+                   value="50" min="10" max="500">
+            <small class="text-muted">More trials = better results, but slower. 50 is a good start.</small>
+          </div>
+          <div class="mb-3">
+            <label class="form-label small">Initial Capital ($)</label>
+            <input type="number" name="initial_capital" class="form-control caf-input form-control-sm"
+                   value="10000" step="1000">
+          </div>
+
+          <div class="mb-3 p-2 bg-dark rounded border small text-muted">
+            <div class="fw-semibold text-light mb-1">Search Space</div>
+            <div>RSI period: 7–21</div>
+            <div>RSI entry threshold: 20–50</div>
+            <div>EMA fast: 8–30</div>
+            <div>EMA slow: 20–100</div>
+            <div>ADX minimum: 15–35</div>
+            <div>BB %B threshold, Volume ratio</div>
+            <div>MACD histogram, Supertrend</div>
+          </div>
+
+          <button type="submit" class="btn btn-danger w-100"
+                  {% if task and task.status == 'running' %}disabled{% endif %}>
+            <i class="bi bi-search-heart me-1"></i>
+            {% if task and task.status == 'running' %}Searching…{% else %}Find Best Algos{% endif %}
+          </button>
+        </form>
+      </div>
+    </div>
+
+    <!-- Progress -->
+    <div class="card caf-card mt-3">
+      <div class="card-header caf-card-header"><i class="bi bi-activity me-2"></i>Progress</div>
+      <div class="card-body"
+           {% if task and task.status == 'running' %}
+           hx-get="{{ url_for('algofinder.status', session_id=session.id) }}"
+           hx-trigger="every 4s"
+           hx-swap="innerHTML"
+           {% endif %}>
+        {% include "partials/task_progress.html" %}
+      </div>
+    </div>
+  </div>
+
+  <div class="col-lg-8">
+    {% if results %}
+    <h5 class="mb-3"><i class="bi bi-trophy me-2 text-warning"></i>Top Discovered Strategies</h5>
+    {% for r in results %}
+    <div class="card caf-card mb-3">
+      <div class="card-header caf-card-header d-flex justify-content-between align-items-center">
+        <div class="d-flex align-items-center gap-2">
+          <span class="badge bg-{{ 'warning text-dark' if r.rank == 1 else 'secondary' }} fs-6">
+            #{{ r.rank }}
+          </span>
+          <span class="fw-semibold text-light">{{ r.strategy_name }}</span>
+        </div>
+        <small class="text-muted">{{ r.created_at.strftime('%Y-%m-%d %H:%M') if r.created_at else '' }}</small>
+      </div>
+      <div class="card-body">
+        <div class="row g-3 mb-3">
+          <div class="col-sm-3 text-center">
+            <div class="text-muted small">IS Return</div>
+            <div class="h5 mb-0 {{ 'text-success' if r.is_return > 0 else 'text-danger' }}">
+              {{ '%+.1f%%' | format(r.is_return) }}
+            </div>
+          </div>
+          <div class="col-sm-3 text-center">
+            <div class="text-muted small">OOS Return</div>
+            <div class="h5 mb-0 {{ 'text-success' if r.oos_return > 0 else 'text-danger' }}">
+              {{ '%+.1f%%' | format(r.oos_return) }}
+            </div>
+          </div>
+          <div class="col-sm-2 text-center">
+            <div class="text-muted small">Win Rate</div>
+            <div class="h5 mb-0">{{ '%.0f%%' | format(r.win_rate * 100) }}</div>
+          </div>
+          <div class="col-sm-2 text-center">
+            <div class="text-muted small">Sharpe</div>
+            <div class="h5 mb-0 {{ 'text-success' if r.sharpe > 1 else 'text-muted' }}">
+              {{ '%.2f' | format(r.sharpe) }}
+            </div>
+          </div>
+          <div class="col-sm-2 text-center">
+            <div class="text-muted small">Max DD</div>
+            <div class="h5 mb-0 text-danger">{{ '-%.1f%%' | format(r.max_drawdown) }}</div>
+          </div>
+        </div>
+
+        <!-- Rules -->
+        {% if r.rules_description %}
+        <div class="caf-code-block">
+          <pre class="mb-0 small text-light">{{ r.rules_description }}</pre>
+        </div>
+        {% endif %}
+
+        <!-- Params -->
+        <details class="mt-2">
+          <summary class="text-muted small" style="cursor:pointer">Raw Parameters</summary>
+          <div class="caf-code-block mt-1">
+            <pre class="mb-0 small text-muted">{{ r.params | tojson(indent=2) }}</pre>
+          </div>
+        </details>
+      </div>
+    </div>
+    {% endfor %}
+    {% else %}
+    <div class="text-center py-5 text-muted">
+      <i class="bi bi-search-heart display-3"></i>
+      <p class="mt-3">No results yet. Run the Algo Finder to discover profitable strategies.</p>
+      <div class="row g-3 mt-2 text-start">
+        {% set feats = [
+          ('bi-cpu', '#58a6ff', 'Optuna TPE Sampler', 'Uses Tree-structured Parzen Estimator for efficient hyperparameter search.'),
+          ('bi-shield-check', '#3fb950', 'OOS Validation', 'Every candidate is validated on out-of-sample data to prevent overfitting.'),
+          ('bi-diagram-3', '#ffa657', 'Multi-Pair Testing', 'Tests on up to 20 pairs simultaneously for robustness.'),
+          ('bi-list-ol', '#d2a8ff', 'Top-5 Output', 'Returns the 5 best parameter combinations with full rule descriptions.'),
+        ] %}
+        {% for icon, color, title, desc in feats %}
+        <div class="col-sm-6">
+          <div class="d-flex gap-2">
+            <i class="bi {{ icon }}" style="color:{{ color }};font-size:1.2rem;flex-shrink:0;margin-top:2px"></i>
+            <div>
+              <div class="fw-semibold text-light">{{ title }}</div>
+              <small class="text-muted">{{ desc }}</small>
+            </div>
+          </div>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}

@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="en" data-bs-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% block title %}CryptoAlgoFinder{% endblock %}</title>
+
+  <!-- Bootstrap 5 dark -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css">
+  <!-- Bootstrap Icons -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
+  <!-- Monaco Editor (loaded lazily) -->
+  <!-- Custom dark theme -->
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/app.css') }}">
+
+  {% block head %}{% endblock %}
+</head>
+<body class="caf-body">
+
+<!-- Sidebar -->
+<div class="caf-sidebar d-flex flex-column">
+  <div class="caf-brand px-3 py-3">
+    <span class="caf-logo"><i class="bi bi-cpu-fill"></i></span>
+    <span class="caf-brand-text">CryptoAlgo<span class="text-primary">Finder</span></span>
+  </div>
+
+  <nav class="nav flex-column px-2 flex-grow-1">
+    {% if session %}
+    <div class="nav-section-label">WORKFLOW</div>
+
+    <a class="nav-link caf-nav-link {% if request.endpoint and 'sessions' in request.endpoint %}active{% endif %}"
+       href="{{ url_for('sessions.detail', session_id=session.id) }}">
+      <i class="bi bi-grid-1x2-fill me-2"></i>Overview
+    </a>
+    <a class="nav-link caf-nav-link {% if request.endpoint and 'data' in request.endpoint %}active{% endif %}"
+       href="{{ url_for('data.data_view', session_id=session.id) }}">
+      <i class="bi bi-cloud-download-fill me-2"></i>
+      <span class="phase-num">2</span> Download Data
+    </a>
+    <a class="nav-link caf-nav-link {% if request.endpoint and 'pairlist' in request.endpoint %}active{% endif %}"
+       href="{{ url_for('pairlist.pairlist_view', session_id=session.id) }}">
+      <i class="bi bi-list-check me-2"></i>
+      <span class="phase-num">3</span> Pairlist
+    </a>
+    <a class="nav-link caf-nav-link {% if request.endpoint and 'strategy' in request.endpoint %}active{% endif %}"
+       href="{{ url_for('strategy.strategy_view', session_id=session.id) }}">
+      <i class="bi bi-code-slash me-2"></i>
+      <span class="phase-num">4</span> Strategy
+    </a>
+    <a class="nav-link caf-nav-link {% if request.endpoint and 'indicators' in request.endpoint %}active{% endif %}"
+       href="{{ url_for('indicators.indicators_view', session_id=session.id) }}">
+      <i class="bi bi-graph-up-arrow me-2"></i>
+      <span class="phase-num">5</span> Add Indicators
+    </a>
+    <a class="nav-link caf-nav-link {% if request.endpoint and 'backtest' in request.endpoint %}active{% endif %}"
+       href="{{ url_for('backtest.backtest_view', session_id=session.id) }}">
+      <i class="bi bi-play-circle-fill me-2"></i>
+      <span class="phase-num">6</span> Backtest
+    </a>
+    <a class="nav-link caf-nav-link {% if request.endpoint and 'analysis' in request.endpoint %}active{% endif %}"
+       href="{{ url_for('analysis.analysis_view', session_id=session.id) }}">
+      <i class="bi bi-bar-chart-fill me-2"></i>
+      <span class="phase-num">7</span> Analysis
+    </a>
+    <a class="nav-link caf-nav-link {% if request.endpoint and 'algofinder' in request.endpoint %}active{% endif %}"
+       href="{{ url_for('algofinder.algofinder_view', session_id=session.id) }}">
+      <i class="bi bi-search-heart-fill me-2"></i>
+      <span class="phase-num">8</span> Algo Finder
+    </a>
+
+    <hr class="caf-hr my-2">
+    {% endif %}
+
+    <div class="nav-section-label">SESSIONS</div>
+    <a class="nav-link caf-nav-link" href="{{ url_for('sessions.list_sessions') }}">
+      <i class="bi bi-folder2-open me-2"></i>All Sessions
+    </a>
+    <a class="nav-link caf-nav-link" href="{{ url_for('sessions.new_session') }}">
+      <i class="bi bi-plus-circle me-2"></i>New Session
+    </a>
+  </nav>
+
+  <div class="caf-sidebar-footer px-3 py-2">
+    <small class="text-muted">v1.3 · Local · No cloud</small>
+  </div>
+</div>
+
+<!-- Main content -->
+<div class="caf-main">
+  <!-- Top bar -->
+  <div class="caf-topbar d-flex align-items-center px-4">
+    {% if session %}
+    <div class="d-flex align-items-center gap-2">
+      <span class="badge bg-primary">{{ session.exchange | upper }}</span>
+      <span class="text-light fw-semibold">{{ session.name }}</span>
+      <span class="badge bg-secondary">{{ session.timeframes | join(', ') }}</span>
+      <span class="badge bg-dark border">{{ session.quote_asset }}</span>
+    </div>
+    {% else %}
+    <span class="text-muted">Select or create a session</span>
+    {% endif %}
+    <div class="ms-auto d-flex align-items-center gap-3">
+      <span class="text-muted small"><i class="bi bi-circle-fill text-success me-1" style="font-size:8px"></i>Local</span>
+    </div>
+  </div>
+
+  <!-- Flash messages -->
+  <div class="px-4 pt-2">
+    {% with messages = get_flashed_messages(with_categories=true) %}
+    {% for category, message in messages %}
+    <div class="alert alert-{{ 'danger' if category == 'error' else category }} alert-dismissible fade show py-2 mb-2" role="alert">
+      {{ message }}
+      <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+    </div>
+    {% endfor %}
+    {% endwith %}
+  </div>
+
+  <!-- Page content -->
+  <div class="caf-content px-4 pb-5">
+    {% block content %}{% endblock %}
+  </div>
+</div>
+
+<!-- Scripts -->
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+<script src="https://unpkg.com/htmx.org@1.9.12/dist/htmx.min.js"></script>
+<script src="https://cdn.plot.ly/plotly-2.32.0.min.js"></script>
+<script src="{{ url_for('static', filename='js/app.js') }}"></script>
+{% block scripts %}{% endblock %}
+</body>
+</html>

@@ -1,0 +1,90 @@
+{% extends "base.html" %}
+{% block title %}Add Indicators – {{ session.name }}{% endblock %}
+
+{% block content %}
+<div class="mt-3 mb-4">
+  <h2 class="mb-0"><i class="bi bi-graph-up-arrow me-2 text-warning"></i>Phase 5 — Add Indicators</h2>
+  <small class="text-muted">Enrich all downloaded OHLCV data with the full technical analysis suite.</small>
+</div>
+
+<div class="row g-4">
+  <div class="col-lg-5">
+    <div class="card caf-card">
+      <div class="card-header caf-card-header"><i class="bi bi-cpu me-2"></i>Run Indicator Engine</div>
+      <div class="card-body">
+        <p class="text-muted mb-3">
+          This will apply <strong>pandas-ta</strong> to every downloaded parquet file and add
+          ~100 indicator columns: EMAs, RSI, MACD, Bollinger Bands, ATR, ADX, Stochastic,
+          Ichimoku, Supertrend, candlestick patterns, and more.
+        </p>
+
+        <div class="row g-2 mb-3">
+          <div class="col-6">
+            <div class="card caf-card text-center py-2">
+              <div class="h4 text-primary mb-0">{{ total_pairs }}</div>
+              <small class="text-muted">Total Pairs</small>
+            </div>
+          </div>
+          <div class="col-6">
+            <div class="card caf-card text-center py-2">
+              <div class="h4 text-success mb-0">{{ ready_pairs }}</div>
+              <small class="text-muted">Have Data</small>
+            </div>
+          </div>
+        </div>
+
+        <form method="post" action="{{ url_for('indicators.run', session_id=session.id) }}">
+          <button type="submit" class="btn btn-warning w-100"
+                  {% if task and task.status == 'running' %}disabled{% endif %}
+                  onclick="return {{ ready_pairs }} > 0 || confirm('No data found. Run Phase 2 (Download) first. Continue anyway?')">
+            <i class="bi bi-lightning-charge me-1"></i>
+            {% if task and task.status == 'running' %}Computing…{% else %}Add All Indicators{% endif %}
+          </button>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <div class="col-lg-7">
+    <div class="card caf-card mb-3">
+      <div class="card-header caf-card-header"><i class="bi bi-activity me-2"></i>Progress</div>
+      <div class="card-body"
+           {% if task and task.status == 'running' %}
+           hx-get="{{ url_for('indicators.status', session_id=session.id) }}"
+           hx-trigger="every 2s"
+           hx-swap="innerHTML"
+           {% endif %}>
+        {% include "partials/task_progress.html" %}
+      </div>
+    </div>
+
+    <!-- Indicator reference card -->
+    <div class="card caf-card">
+      <div class="card-header caf-card-header"><i class="bi bi-list me-2"></i>Indicator Suite</div>
+      <div class="card-body">
+        <div class="row g-3">
+          {% set groups = [
+            ('Trend', 'bi-arrow-up-right', 'EMA 8/13/20/21/50/100/200, SMA 8/20/50/100/200, Supertrend, PSAR, Ichimoku Cloud'),
+            ('Momentum', 'bi-speedometer2', 'RSI 7/14/21, MACD, Stochastic RSI, Stochastic, MFI, CCI, Williams %R, ROC'),
+            ('Volatility', 'bi-distribute-vertical', 'Bollinger Bands (14 & 20), ATR 7/14/21, Keltner Channels, Donchian Channels'),
+            ('Volume', 'bi-bar-chart', 'OBV, ADX, VWAP, VWMA, Accumulation/Distribution'),
+            ('Patterns', 'bi-star', 'Doji, Hammer, Shooting Star, Engulfing, Morning/Evening Star, Harami, 3 Black Crows, 3 White Soldiers'),
+            ('Derived', 'bi-calculator', 'EMA crosses, candle body%, wick sizes, volume ratio vs 20-bar average'),
+          ] %}
+          {% for name, icon, desc in groups %}
+          <div class="col-sm-6">
+            <div class="d-flex gap-2">
+              <i class="bi {{ icon }} text-primary mt-1"></i>
+              <div>
+                <div class="fw-semibold text-light">{{ name }}</div>
+                <small class="text-muted">{{ desc }}</small>
+              </div>
+            </div>
+          </div>
+          {% endfor %}
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

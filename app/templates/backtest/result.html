@@ -1,0 +1,116 @@
+{% extends "base.html" %}
+{% block title %}Backtest Results – {{ session.name }}{% endblock %}
+
+{% block content %}
+<div class="mt-3 mb-4 d-flex justify-content-between align-items-start">
+  <div>
+    <h2 class="mb-0"><i class="bi bi-bar-chart me-2 text-info"></i>Backtest Results</h2>
+    <small class="text-muted">Run ID: <code class="text-muted">{{ run.id[:12] }}…</code></small>
+  </div>
+  <div class="d-flex gap-2">
+    <a href="{{ url_for('backtest.backtest_view', session_id=session.id) }}"
+       class="btn btn-sm btn-outline-secondary">
+      <i class="bi bi-arrow-left me-1"></i>Back
+    </a>
+    <form method="post" action="{{ url_for('analysis.run', session_id=session.id) }}">
+      <input type="hidden" name="run_id" value="{{ run.id }}">
+      <button class="btn btn-sm btn-primary">
+        <i class="bi bi-bar-chart-steps me-1"></i>Run Analysis
+      </button>
+    </form>
+  </div>
+</div>
+
+<!-- Metric cards -->
+<div class="row g-3 mb-4">
+  {% set metrics = [
+    ('Total Trades', run.total_trades, '', 'bi-arrow-left-right', '#58a6ff'),
+    ('Win Rate', '%.1f%%' | format(run.win_rate * 100), '', 'bi-trophy', '#3fb950'),
+    ('Profit Factor', '%.2f' | format(run.profit_factor), '', 'bi-currency-dollar', '#ffa657'),
+    ('Sharpe Ratio', '%.2f' | format(run.sharpe_ratio), '', 'bi-speedometer', '#d2a8ff'),
+    ('Max Drawdown', '-%.1f%%' | format(run.max_drawdown), 'text-danger', 'bi-graph-down-arrow', '#f85149'),
+    ('IS Return', '%+.1f%%' | format(run.total_return), 'text-success' if run.total_return > 0 else 'text-danger', 'bi-graph-up', '#3fb950'),
+    ('OOS Return', '%+.1f%%' | format(run.oos_return), 'text-success' if run.oos_return > 0 else 'text-danger', 'bi-shield-check', '#79c0ff'),
+    ('OOS Win Rate', '%.1f%%' | format(run.oos_win_rate * 100), '', 'bi-check-circle', '#58a6ff'),
+  ] %}
+  {% for label, value, color_class, icon, color in metrics %}
+  <div class="col-6 col-md-3">
+    <div class="card caf-card text-center py-3">
+      <div class="mb-1" style="color: {{ color }}"><i class="bi {{ icon }} fs-4"></i></div>
+      <div class="h4 mb-0 {{ color_class }}">{{ value }}</div>
+      <small class="text-muted">{{ label }}</small>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+
+<!-- PnL Distribution chart -->
+{% if pnl_chart %}
+<div class="card caf-card mb-4">
+  <div class="card-header caf-card-header"><i class="bi bi-bar-chart me-2"></i>PnL Distribution</div>
+  <div class="card-body p-0">
+    <div id="pnl-dist-chart"></div>
+  </div>
+</div>
+{% endif %}
+
+<!-- Trade table -->
+<div class="card caf-card">
+  <div class="card-header caf-card-header d-flex justify-content-between">
+    <span><i class="bi bi-table me-2"></i>Trades ({{ trades | length }}{% if trades | length == 200 %}+{% endif %})</span>
+    <div class="d-flex gap-2">
+      <span class="badge bg-success">{{ winners | length }} winners</span>
+      <span class="badge bg-danger">{{ losers | length }} losers</span>
+    </div>
+  </div>
+  <div class="card-body p-0">
+    <div class="table-responsive" style="max-height:500px; overflow-y:auto">
+      <table class="table caf-table table-sm mb-0">
+        <thead class="sticky-top">
+          <tr>
+            <th>Symbol</th>
+            <th>TF</th>
+            <th>Entry</th>
+            <th>Exit</th>
+            <th class="text-end">Entry $</th>
+            <th class="text-end">Exit $</th>
+            <th class="text-end">PnL %</th>
+            <th class="text-end">Bars</th>
+            <th>Result</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for t in trades %}
+          <tr class="{{ 'table-success-subtle' if t.is_winner else 'table-danger-subtle' }}">
+            <td class="fw-semibold">{{ t.symbol }}</td>
+            <td>{{ t.timeframe }}</td>
+            <td><small>{{ t.entry_time }}</small></td>
+            <td><small>{{ t.exit_time or '—' }}</small></td>
+            <td class="text-end"><small>{{ '%.4f' | format(t.entry_price) }}</small></td>
+            <td class="text-end"><small>{{ '%.4f' | format(t.exit_price) if t.exit_price else '—' }}</small></td>
+            <td class="text-end fw-bold {{ 'text-success' if t.is_winner else 'text-danger' }}">
+              {{ '%+.2f%%' | format(t.pnl_pct) }}
+            </td>
+            <td class="text-end">{{ t.duration_bars }}</td>
+            <td>
+              <span class="badge bg-{{ 'success' if t.is_winner else 'danger' }}">
+                {{ 'WIN' if t.is_winner else 'LOSS' }}
+              </span>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+{% if pnl_chart %}
+<script>
+  var chartData = {{ pnl_chart | safe }};
+  Plotly.newPlot('pnl-dist-chart', chartData.data, chartData.layout, {responsive: true, displayModeBar: false});
+</script>
+{% endif %}
+{% endblock %}

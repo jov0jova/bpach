@@ -1,0 +1,153 @@
+{% extends "base.html" %}
+{% block title %}{{ session.name }} – CryptoAlgoFinder{% endblock %}
+
+{% block content %}
+<div class="mt-3 mb-4">
+  <h2 class="mb-0"><i class="bi bi-grid-1x2-fill me-2 text-primary"></i>{{ session.name }}</h2>
+  <small class="text-muted">Session overview — follow the phases in order.</small>
+</div>
+
+<!-- Phase cards -->
+<div class="row g-3 mb-4">
+  {% set phases = [
+    ('2', 'Download Data', 'cloud-download-fill', 'data.data_view', 'download', '#3fb950'),
+    ('3', 'Pairlist', 'list-check', 'pairlist.pairlist_view', None, '#58a6ff'),
+    ('4', 'Strategy', 'code-slash', 'strategy.strategy_view', None, '#d2a8ff'),
+    ('5', 'Add Indicators', 'graph-up-arrow', 'indicators.indicators_view', 'indicators', '#ffa657'),
+    ('6', 'Backtest', 'play-circle-fill', 'backtest.backtest_view', 'backtest', '#79c0ff'),
+    ('7', 'Analysis', 'bar-chart-fill', 'analysis.analysis_view', 'analysis', '#f0883e'),
+    ('8', 'Algo Finder', 'search-heart-fill', 'algofinder.algofinder_view', 'algofinder', '#ff7b72'),
+  ] %}
+
+  {% for num, label, icon, endpoint, task_key, color in phases %}
+  <div class="col-sm-6 col-xl-3">
+    <a href="{{ url_for(endpoint, session_id=session.id) }}" class="text-decoration-none">
+      <div class="card caf-card caf-phase-card h-100">
+        <div class="card-body d-flex align-items-center gap-3">
+          <div class="caf-phase-icon" style="color: {{ color }}">
+            <i class="bi bi-{{ icon }}"></i>
+            <span class="caf-phase-num">{{ num }}</span>
+          </div>
+          <div>
+            <div class="fw-semibold text-light">{{ label }}</div>
+            {% if task_key and tasks.get(task_key) %}
+            {% set t = tasks[task_key] %}
+            <small class="text-{{ 'success' if t.status == 'done' else 'warning' if t.status == 'running' else 'muted' }}">
+              {{ t.status | title }}
+            </small>
+            {% else %}
+            <small class="text-muted">Not started</small>
+            {% endif %}
+          </div>
+        </div>
+      </div>
+    </a>
+  </div>
+  {% endfor %}
+</div>
+
+<!-- Stats row -->
+<div class="row g-3 mb-4">
+  <div class="col-sm-4">
+    <div class="card caf-card text-center py-3">
+      <div class="display-6 text-primary fw-bold">{{ pair_count }}</div>
+      <small class="text-muted">Total Pairs</small>
+    </div>
+  </div>
+  <div class="col-sm-4">
+    <div class="card caf-card text-center py-3">
+      <div class="display-6 text-success fw-bold">{{ active_pair_count }}</div>
+      <small class="text-muted">Active Pairs</small>
+    </div>
+  </div>
+  <div class="col-sm-4">
+    <div class="card caf-card text-center py-3">
+      <div class="display-6 text-warning fw-bold">{{ runs | length }}</div>
+      <small class="text-muted">Backtest Runs</small>
+    </div>
+  </div>
+</div>
+
+<!-- Recent backtest runs -->
+{% if runs %}
+<h5 class="mb-2"><i class="bi bi-play-circle me-2 text-primary"></i>Recent Backtest Runs</h5>
+<div class="table-responsive">
+  <table class="table caf-table table-sm">
+    <thead>
+      <tr>
+        <th>Status</th>
+        <th>Trades</th>
+        <th>Win Rate</th>
+        <th>Profit Factor</th>
+        <th>Sharpe</th>
+        <th>Max DD</th>
+        <th>IS Return</th>
+        <th>OOS Return</th>
+        <th>Created</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for run in runs[:5] %}
+      <tr>
+        <td>
+          <span class="badge bg-{{ 'success' if run.status == 'done' else 'danger' if run.status == 'error' else 'warning' }}">
+            {{ run.status }}
+          </span>
+        </td>
+        <td>{{ run.total_trades }}</td>
+        <td>{{ '%.1f%%' | format(run.win_rate * 100) }}</td>
+        <td>{{ '%.2f' | format(run.profit_factor) }}</td>
+        <td>{{ '%.2f' | format(run.sharpe_ratio) }}</td>
+        <td class="text-danger">{{ '%.1f%%' | format(run.max_drawdown) }}</td>
+        <td class="{{ 'text-success' if run.total_return > 0 else 'text-danger' }}">
+          {{ '%+.1f%%' | format(run.total_return) }}
+        </td>
+        <td class="{{ 'text-success' if run.oos_return > 0 else 'text-danger' }}">
+          {{ '%+.1f%%' | format(run.oos_return) }}
+        </td>
+        <td><small class="text-muted">{{ run.created_at.strftime('%m-%d %H:%M') if run.created_at else '—' }}</small></td>
+        <td>
+          <a href="{{ url_for('backtest.result', session_id=session.id, run_id=run.id) }}"
+             class="btn btn-xs btn-outline-secondary">View</a>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+
+<!-- Algo results preview -->
+{% if algo_results %}
+<h5 class="mb-2 mt-3"><i class="bi bi-search-heart me-2 text-primary"></i>Algo Finder Results</h5>
+<div class="row g-2">
+  {% for ar in algo_results[:3] %}
+  <div class="col-md-4">
+    <div class="card caf-card p-3">
+      <div class="d-flex justify-content-between mb-1">
+        <span class="fw-semibold text-primary">{{ ar.strategy_name }}</span>
+        <span class="badge bg-dark">#{{ ar.rank }}</span>
+      </div>
+      <div class="row g-1 text-center">
+        <div class="col-4">
+          <div class="text-muted small">OOS Ret.</div>
+          <div class="fw-bold {{ 'text-success' if ar.oos_return > 0 else 'text-danger' }}">
+            {{ '%+.1f%%' | format(ar.oos_return) }}
+          </div>
+        </div>
+        <div class="col-4">
+          <div class="text-muted small">Win Rate</div>
+          <div class="fw-bold">{{ '%.0f%%' | format(ar.win_rate * 100) }}</div>
+        </div>
+        <div class="col-4">
+          <div class="text-muted small">Sharpe</div>
+          <div class="fw-bold">{{ '%.2f' | format(ar.sharpe) }}</div>
+        </div>
+      </div>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+{% endif %}
+{% endblock %}

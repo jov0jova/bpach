@@ -1,0 +1,32 @@
+{% if task %}
+<div class="task-progress-container" id="task-{{ task.id }}">
+  {% set pct = ((task.progress / task.total * 100) | int) if task.total > 0 else 0 %}
+  {% if task.status == 'running' %}
+    <div class="d-flex justify-content-between align-items-center mb-1">
+      <span class="text-muted small">
+        <span class="spinner-border spinner-border-sm me-1 text-primary" role="status"></span>
+        {{ task.message or 'Running…' }}
+      </span>
+      <span class="text-muted small">{{ task.progress }}/{{ task.total }}</span>
+    </div>
+    <div class="progress" style="height:6px">
+      <div class="progress-bar progress-bar-striped progress-bar-animated bg-primary"
+           style="width: {{ pct }}%"></div>
+    </div>
+  {% elif task.status == 'done' %}
+    <div class="d-flex align-items-center gap-2">
+      <i class="bi bi-check-circle-fill text-success"></i>
+      <span class="text-success small">{{ task.message or 'Completed.' }}</span>
+    </div>
+  {% elif task.status == 'error' %}
+    <div class="d-flex align-items-center gap-2">
+      <i class="bi bi-x-circle-fill text-danger"></i>
+      <span class="text-danger small">{{ task.error or 'An error occurred.' }}</span>
+    </div>
+  {% else %}
+    <span class="text-muted small"><i class="bi bi-hourglass me-1"></i>Pending…</span>
+  {% endif %}
+</div>
+{% else %}
+<span class="text-muted small">No task yet.</span>
+{% endif %}

@@ -1,0 +1,104 @@
+{% extends "base.html" %}
+{% block title %}Analysis – {{ session.name }}{% endblock %}
+
+{% block content %}
+<div class="mt-3 mb-4">
+  <h2 class="mb-0"><i class="bi bi-bar-chart-fill me-2 text-warning"></i>Phase 7 — Profitability Analysis</h2>
+  <small class="text-muted">Reverse-engineer winning trades to find what all profitable entries had in common.</small>
+</div>
+
+<div class="row g-4">
+  <div class="col-lg-4">
+    <div class="card caf-card">
+      <div class="card-header caf-card-header"><i class="bi bi-search me-2"></i>Run Analysis</div>
+      <div class="card-body">
+        <form method="post" action="{{ url_for('analysis.run', session_id=session.id) }}">
+          <div class="mb-3">
+            <label class="form-label small">Select Backtest Run</label>
+            <select name="run_id" class="form-select caf-input form-select-sm">
+              {% for run in runs %}
+              {% if run.status == 'done' %}
+              <option value="{{ run.id }}" {{ 'selected' if run.id == selected_run_id }}>
+                {{ run.created_at.strftime('%m-%d %H:%M') if run.created_at else '—' }} —
+                {{ run.total_trades }} trades, WR {{ '%.0f%%' | format(run.win_rate * 100) }}
+              </option>
+              {% endif %}
+              {% endfor %}
+            </select>
+          </div>
+          <button type="submit" class="btn btn-warning w-100 text-dark"
+                  {% if task and task.status == 'running' %}disabled{% endif %}>
+            <i class="bi bi-search me-1"></i>
+            {% if task and task.status == 'running' %}Analysing…{% else %}Run Analysis{% endif %}
+          </button>
+        </form>
+        {% if not runs or not (runs | selectattr('status', 'equalto', 'done') | list) %}
+        <div class="alert alert-warning mt-2 py-2 small">
+          <i class="bi bi-exclamation-triangle me-1"></i>
+          No completed backtests. Run Phase 6 first.
+        </div>
+        {% endif %}
+      </div>
+    </div>
+
+    <!-- Progress -->
+    <div class="card caf-card mt-3">
+      <div class="card-header caf-card-header"><i class="bi bi-activity me-2"></i>Progress</div>
+      <div class="card-body"
+           {% if task and task.status == 'running' %}
+           hx-get="{{ url_for('analysis.status', session_id=session.id) }}"
+           hx-trigger="every 3s"
+           hx-swap="innerHTML"
+           {% endif %}>
+        {% include "partials/task_progress.html" %}
+      </div>
+    </div>
+
+    {% if task and task.status == 'done' and task.result %}
+    <div class="card caf-card mt-3">
+      <div class="card-body text-center">
+        <div class="text-success mb-2"><i class="bi bi-check-circle-fill fs-3"></i></div>
+        <div class="fw-bold text-light">Analysis Complete</div>
+        <a href="{{ url_for('analysis.results', session_id=session.id, run_id=task.result.get('run_id', '')) }}"
+           class="btn btn-success mt-2 w-100">
+          <i class="bi bi-bar-chart-steps me-1"></i>View Results
+        </a>
+      </div>
+    </div>
+    {% endif %}
+  </div>
+
+  <div class="col-lg-8">
+    <div class="card caf-card">
+      <div class="card-header caf-card-header">
+        <i class="bi bi-lightbulb me-2"></i>What This Analysis Does
+      </div>
+      <div class="card-body">
+        <div class="row g-4">
+          {% set steps = [
+            ('bi-filter-circle', '#58a6ff', 'Filter Winning Trades', 'Identifies every trade that resulted in a profit from your backtest results.'),
+            ('bi-camera', '#3fb950', 'Indicator Snapshot', 'For each winner, records the exact value of every indicator at the moment of entry.'),
+            ('bi-graph-up', '#ffa657', 'Statistical Patterns', 'Computes mean, std, percentiles for each indicator across all winners.'),
+            ('bi-diagram-3', '#d2a8ff', 'Correlation Heatmap', 'Shows which indicators were correlated at winning entries.'),
+            ('bi-bar-chart-steps', '#ff7b72', 'Condition Frequency', 'Reveals which conditions appeared most often in profitable setups.'),
+            ('bi-kanban', '#79c0ff', 'Multi-TF Context', 'Captures ±10 candles on each timeframe around every winning entry for visual review.'),
+          ] %}
+          {% for icon, color, title, desc in steps %}
+          <div class="col-sm-6">
+            <div class="d-flex gap-3">
+              <div style="color: {{ color }}; font-size: 1.4rem; flex-shrink:0">
+                <i class="bi {{ icon }}"></i>
+              </div>
+              <div>
+                <div class="fw-semibold text-light">{{ title }}</div>
+                <small class="text-muted">{{ desc }}</small>
+              </div>
+            </div>
+          </div>
+          {% endfor %}
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

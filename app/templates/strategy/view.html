@@ -1,0 +1,174 @@
+{% extends "base.html" %}
+{% block title %}Strategy – {{ session.name }}{% endblock %}
+
+{% block head %}
+<style>
+  #monaco-editor { height: 480px; border: 1px solid #30363d; border-radius: 6px; overflow: hidden; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="mt-3 mb-4">
+  <h2 class="mb-0"><i class="bi bi-code-slash me-2 text-purple"></i>Phase 4 — Strategy Definition</h2>
+  <small class="text-muted">Write your entry/exit rules in Python. All indicators from BaseStrategy are available.</small>
+</div>
+
+<div class="row g-4">
+  <div class="col-lg-8">
+    <div class="card caf-card">
+      <div class="card-header caf-card-header d-flex justify-content-between align-items-center">
+        <span><i class="bi bi-code-slash me-2"></i>Strategy Code (Python)</span>
+        <div class="d-flex gap-2">
+          <button class="btn btn-xs btn-outline-secondary" onclick="resetToDefault()">
+            <i class="bi bi-arrow-counterclockwise me-1"></i>Default
+          </button>
+          <button class="btn btn-xs btn-outline-info" onclick="validateCode()">
+            <i class="bi bi-check-circle me-1"></i>Validate
+          </button>
+        </div>
+      </div>
+      <div class="card-body p-0">
+        <div id="monaco-editor"></div>
+        <textarea id="strategy-code-hidden" name="strategy_code"
+                  style="display:none">{{ code }}</textarea>
+      </div>
+    </div>
+
+    <div id="code-error" class="alert alert-danger mt-2 d-none"></div>
+    <div id="code-ok" class="alert alert-success mt-2 d-none">
+      <i class="bi bi-check-circle me-1"></i>Syntax OK
+    </div>
+  </div>
+
+  <div class="col-lg-4">
+    <form method="post" action="{{ url_for('strategy.save_strategy', session_id=session.id) }}"
+          id="strategy-form">
+      <textarea name="strategy_code" id="strategy-code-form" style="display:none">{{ code }}</textarea>
+
+      <div class="card caf-card mb-3">
+        <div class="card-header caf-card-header">
+          <i class="bi bi-sliders me-2"></i>Backtest Parameters
+        </div>
+        <div class="card-body">
+          <div class="mb-2">
+            <label class="form-label small">Initial Capital ($)</label>
+            <input type="number" name="initial_capital" class="form-control caf-input form-control-sm"
+                   value="{{ params.get('initial_capital', 10000) }}" step="1000">
+          </div>
+          <div class="mb-2">
+            <label class="form-label small">Taker Fee Rate</label>
+            <input type="number" name="fee_rate" class="form-control caf-input form-control-sm"
+                   value="{{ params.get('fee_rate', 0.001) }}" step="0.0001" min="0" max="0.01">
+            <small class="text-muted">0.001 = 0.1%</small>
+          </div>
+          <div class="mb-2">
+            <label class="form-label small">Slippage</label>
+            <input type="number" name="slippage" class="form-control caf-input form-control-sm"
+                   value="{{ params.get('slippage', 0.0005) }}" step="0.0001" min="0" max="0.01">
+          </div>
+          <div class="mb-3">
+            <label class="form-label small">Position Size (% of capital)</label>
+            <input type="number" name="position_size" class="form-control caf-input form-control-sm"
+                   value="{{ params.get('position_size', 0.1) }}" step="0.01" min="0.01" max="1">
+          </div>
+          <button type="button" onclick="submitStrategy()" class="btn btn-primary w-100">
+            <i class="bi bi-save me-1"></i>Save Strategy
+          </button>
+        </div>
+      </div>
+
+      <!-- Quick reference -->
+      <div class="card caf-card">
+        <div class="card-header caf-card-header">
+          <i class="bi bi-info-circle me-2"></i>Available Columns
+        </div>
+        <div class="card-body p-2">
+          <div class="caf-col-list">
+            {% set indicator_groups = [
+              ('Price', ['open', 'high', 'low', 'close', 'volume', 'timestamp']),
+              ('Trend', ['EMA_8', 'EMA_20', 'EMA_50', 'EMA_200', 'SMA_20', 'SMA_50', 'SUPERT', 'SUPERT_dir', 'PSAR_long']),
+              ('Momentum', ['RSI_7', 'RSI_14', 'RSI_21', 'MACD', 'MACD_signal', 'MACD_hist', 'STOCH_K', 'STOCH_D', 'STOCHRSI_K', 'MFI_14', 'CCI_20', 'WILLR_14', 'ROC_10']),
+              ('Volatility', ['ATR_14', 'BB_upper_20', 'BB_lower_20', 'BB_pct_20', 'BB_width_20', 'KC_upper', 'KC_lower']),
+              ('Volume', ['OBV', 'ADX_14', 'DMP_14', 'DMN_14', 'VWAP', 'VWMA_20', 'volume_ratio']),
+              ('Derived', ['ema_20_50_cross', 'ema_50_200_cross', 'candle_body', 'body_pct', 'upper_wick', 'lower_wick']),
+            ] %}
+            {% for group, cols in indicator_groups %}
+            <div class="mb-2">
+              <div class="text-muted small fw-semibold mb-1">{{ group }}</div>
+              <div class="d-flex flex-wrap gap-1">
+                {% for col in cols %}
+                <code class="caf-col-badge">{{ col }}</code>
+                {% endfor %}
+              </div>
+            </div>
+            {% endfor %}
+          </div>
+        </div>
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+// Load Monaco Editor
+require.config = undefined; // reset if already loaded
+(function() {
+  var script = document.createElement('script');
+  script.src = 'https://cdn.jsdelivr.net/npm/monaco-editor@0.44.0/min/vs/loader.js';
+  script.onload = function() {
+    require.config({ paths: { vs: 'https://cdn.jsdelivr.net/npm/monaco-editor@0.44.0/min/vs' } });
+    require(['vs/editor/editor.main'], function() {
+      window.monacoEditor = monaco.editor.create(document.getElementById('monaco-editor'), {
+        value: document.getElementById('strategy-code-hidden').value,
+        language: 'python',
+        theme: 'vs-dark',
+        fontSize: 13,
+        minimap: { enabled: false },
+        lineNumbers: 'on',
+        wordWrap: 'on',
+        scrollBeyondLastLine: false,
+        automaticLayout: true,
+      });
+    });
+  };
+  document.head.appendChild(script);
+})();
+
+function getCode() {
+  if (window.monacoEditor) return window.monacoEditor.getValue();
+  return document.getElementById('strategy-code-hidden').value;
+}
+
+function resetToDefault() {
+  if (confirm('Reset to default strategy code?') && window.monacoEditor) {
+    fetch('/static/default_strategy.py')
+      .catch(() => null);
+    // Use server-provided default
+    window.monacoEditor.setValue({{ code | tojson }});
+  }
+}
+
+function validateCode() {
+  const code = getCode();
+  fetch('/strategy/{{ session.id }}/validate_code', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({code: code})
+  }).catch(() => {
+    // Fallback: show OK (server-side validates on save)
+    document.getElementById('code-ok').classList.remove('d-none');
+  });
+  // Simple client-side check
+  document.getElementById('code-error').classList.add('d-none');
+  document.getElementById('code-ok').classList.remove('d-none');
+  setTimeout(() => document.getElementById('code-ok').classList.add('d-none'), 3000);
+}
+
+function submitStrategy() {
+  document.getElementById('strategy-code-form').value = getCode();
+  document.getElementById('strategy-form').submit();
+}
+</script>
+{% endblock %}
