@@ -10,6 +10,8 @@ build/
 .eggs/
 .env
 data/
+!app/templates/data/
+!app/templates/data/**
 logs/
 *.db
 *.db-wal
