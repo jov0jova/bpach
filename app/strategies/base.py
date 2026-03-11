@@ -2,11 +2,13 @@
 BaseStrategy: adds every major technical analysis indicator to a DataFrame.
 All custom strategies inherit from this and override populate_entry_signal()
 and populate_exit_signal().
+
+Uses the `ta` library (https://github.com/bukosabino/ta) which is pure Python
+and installs cleanly on all platforms including Windows + Python 3.11.
 """
 import logging
 
 import pandas as pd
-import pandas_ta as ta
 
 logger = logging.getLogger(__name__)
 
@@ -14,7 +16,7 @@ logger = logging.getLogger(__name__)
 class BaseStrategy:
     """
     Base class for all CryptoAlgoFinder strategies.
-    Provides populate_indicators() which adds ~100 indicators via pandas-ta.
+    Provides populate_indicators() which adds 80+ indicators via the `ta` library.
     """
 
     name: str = "BaseStrategy"
@@ -35,179 +37,149 @@ class BaseStrategy:
 
     def populate_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
         """
-        Add the full suite of technical indicators.
-        Column naming follows pandas-ta convention.
+        Add the full suite of technical indicators using the `ta` library.
         """
         if len(df) < 50:
             return df
 
         try:
+            import ta.trend as tr
+            import ta.momentum as mom
+            import ta.volatility as vol_mod
+            import ta.volume as volm
+        except ImportError:
+            logger.warning("ta library not installed. Run: pip install ta==0.11.0")
+            return df
+
+        close = df["close"]
+        high  = df["high"]
+        low   = df["low"]
+        vol   = df["volume"]
+
+        try:
             # ── Trend ─────────────────────────────────────────────────────────
             for period in [8, 13, 20, 21, 50, 100, 200]:
-                df[f"EMA_{period}"] = ta.ema(df["close"], length=period)
-                df[f"SMA_{period}"] = ta.sma(df["close"], length=period)
+                df[f"EMA_{period}"] = tr.EMAIndicator(close, window=period, fillna=False).ema_indicator()
+                df[f"SMA_{period}"] = tr.SMAIndicator(close, window=period, fillna=False).sma_indicator()
 
-            # Supertrend
-            st = ta.supertrend(df["high"], df["low"], df["close"], length=10, multiplier=3.0)
-            if st is not None:
-                df["SUPERT"] = st.get("SUPERT_10_3.0")
-                df["SUPERT_dir"] = st.get("SUPERTd_10_3.0")
+            # MACD
+            macd_obj = tr.MACD(close, window_slow=26, window_fast=12, window_sign=9, fillna=False)
+            df["MACD"]        = macd_obj.macd()
+            df["MACD_signal"] = macd_obj.macd_signal()
+            df["MACD_hist"]   = macd_obj.macd_diff()
 
-            # PSAR
-            psar = ta.psar(df["high"], df["low"], df["close"])
-            if psar is not None and not psar.empty:
-                df["PSAR_long"] = psar.get("PSARl_0.02_0.2")
-                df["PSAR_short"] = psar.get("PSARs_0.02_0.2")
+            # ADX + DMI
+            adx_obj = tr.ADXIndicator(high, low, close, window=14, fillna=False)
+            df["ADX_14"] = adx_obj.adx()
+            df["DMP_14"] = adx_obj.adx_pos()
+            df["DMN_14"] = adx_obj.adx_neg()
 
-            # Ichimoku (simplified)
-            ich = ta.ichimoku(df["high"], df["low"], df["close"])
-            if ich is not None and len(ich) >= 2:
-                base = ich[0]
-                if base is not None and not base.empty:
-                    df["ICH_tenkan"] = base.get("ITS_9")
-                    df["ICH_kijun"] = base.get("IKS_26")
-                    df["ICH_senkou_a"] = base.get("ISA_9")
-                    df["ICH_senkou_b"] = base.get("ISB_26")
+            # Ichimoku
+            ichi = tr.IchimokuIndicator(high, low, window1=9, window2=26, window3=52, fillna=False)
+            df["ICH_tenkan"]   = ichi.ichimoku_conversion_line()
+            df["ICH_kijun"]    = ichi.ichimoku_base_line()
+            df["ICH_senkou_a"] = ichi.ichimoku_a()
+            df["ICH_senkou_b"] = ichi.ichimoku_b()
+
+            # Aroon
+            aroon = tr.AroonIndicator(high, low, window=25, fillna=False)
+            df["AROON_up"]   = aroon.aroon_up()
+            df["AROON_down"] = aroon.aroon_down()
+
+            # PSAR (Parabolic SAR)
+            psar_obj = tr.PSARIndicator(high, low, close, step=0.02, max_step=0.2, fillna=False)
+            df["PSAR_up"]   = psar_obj.psar_up()
+            df["PSAR_down"] = psar_obj.psar_down()
 
             # ── Momentum ──────────────────────────────────────────────────────
             for period in [7, 14, 21]:
-                df[f"RSI_{period}"] = ta.rsi(df["close"], length=period)
-
-            # Stochastic RSI
-            stoch_rsi = ta.stochrsi(df["close"], length=14)
-            if stoch_rsi is not None and not stoch_rsi.empty:
-                df["STOCHRSI_K"] = stoch_rsi.get("STOCHRSIk_14_14_3_3")
-                df["STOCHRSI_D"] = stoch_rsi.get("STOCHRSId_14_14_3_3")
+                df[f"RSI_{period}"] = mom.RSIIndicator(close, window=period, fillna=False).rsi()
 
             # Stochastic
-            stoch = ta.stoch(df["high"], df["low"], df["close"])
-            if stoch is not None and not stoch.empty:
-                df["STOCH_K"] = stoch.get("STOCHk_14_3_3")
-                df["STOCH_D"] = stoch.get("STOCHd_14_3_3")
+            stoch_obj = mom.StochasticOscillator(high, low, close, window=14, smooth_window=3, fillna=False)
+            df["STOCH_K"] = stoch_obj.stoch()
+            df["STOCH_D"] = stoch_obj.stoch_signal()
 
-            # MACD
-            macd = ta.macd(df["close"])
-            if macd is not None and not macd.empty:
-                df["MACD"] = macd.get("MACD_12_26_9")
-                df["MACD_signal"] = macd.get("MACDs_12_26_9")
-                df["MACD_hist"] = macd.get("MACDh_12_26_9")
-
-            # MFI
-            df["MFI_14"] = ta.mfi(df["high"], df["low"], df["close"], df["volume"], length=14)
-
-            # CCI
-            df["CCI_20"] = ta.cci(df["high"], df["low"], df["close"], length=20)
+            # Stochastic RSI
+            stochrsi_obj = mom.StochRSIIndicator(close, window=14, smooth1=3, smooth2=3, fillna=False)
+            df["STOCHRSI_K"] = stochrsi_obj.stochrsi_k()
+            df["STOCHRSI_D"] = stochrsi_obj.stochrsi_d()
 
             # Williams %R
-            df["WILLR_14"] = ta.willr(df["high"], df["low"], df["close"], length=14)
+            df["WILLR_14"] = mom.WilliamsRIndicator(high, low, close, lbp=14, fillna=False).williams_r()
 
             # ROC
-            df["ROC_10"] = ta.roc(df["close"], length=10)
+            df["ROC_10"] = mom.ROCIndicator(close, window=10, fillna=False).roc()
+
+            # Awesome Oscillator
+            df["AO"] = mom.AwesomeOscillatorIndicator(high, low, window1=5, window2=34, fillna=False).awesome_oscillator()
+
+            # KAMA
+            df["KAMA"] = mom.KAMAIndicator(close, window=10, pow1=2, pow2=30, fillna=False).kama()
 
             # ── Volatility ────────────────────────────────────────────────────
-            # Bollinger Bands
             for period in [14, 20]:
-                bb = ta.bbands(df["close"], length=period)
-                if bb is not None and not bb.empty:
-                    df[f"BB_upper_{period}"] = bb.get(f"BBU_{period}_2.0")
-                    df[f"BB_mid_{period}"] = bb.get(f"BBM_{period}_2.0")
-                    df[f"BB_lower_{period}"] = bb.get(f"BBL_{period}_2.0")
-                    df[f"BB_width_{period}"] = bb.get(f"BBB_{period}_2.0")
-                    df[f"BB_pct_{period}"] = bb.get(f"BBP_{period}_2.0")
+                bb = vol_mod.BollingerBands(close, window=period, window_dev=2, fillna=False)
+                df[f"BB_upper_{period}"] = bb.bollinger_hband()
+                df[f"BB_mid_{period}"]   = bb.bollinger_mavg()
+                df[f"BB_lower_{period}"] = bb.bollinger_lband()
+                df[f"BB_width_{period}"] = bb.bollinger_wband()
+                df[f"BB_pct_{period}"]   = bb.bollinger_pband()
 
-            # ATR
             for period in [7, 14, 21]:
-                df[f"ATR_{period}"] = ta.atr(df["high"], df["low"], df["close"], length=period)
+                df[f"ATR_{period}"] = vol_mod.AverageTrueRange(high, low, close, window=period, fillna=False).average_true_range()
 
-            # Keltner Channels
-            kc = ta.kc(df["high"], df["low"], df["close"])
-            if kc is not None and not kc.empty:
-                df["KC_upper"] = kc.get("KCUe_20_2")
-                df["KC_lower"] = kc.get("KCLe_20_2")
+            kc = vol_mod.KeltnerChannel(high, low, close, window=20, window_atr=10, fillna=False)
+            df["KC_upper"]  = kc.keltner_channel_hband()
+            df["KC_lower"]  = kc.keltner_channel_lband()
+            df["KC_middle"] = kc.keltner_channel_mband()
 
-            # Donchian Channels
-            dc = ta.donchian(df["high"], df["low"])
-            if dc is not None and not dc.empty:
-                df["DC_upper"] = dc.get("DCU_20_20")
-                df["DC_lower"] = dc.get("DCL_20_20")
+            dc = vol_mod.DonchianChannel(high, low, close, window=20, fillna=False)
+            df["DC_upper"]  = dc.donchian_channel_hband()
+            df["DC_lower"]  = dc.donchian_channel_lband()
+            df["DC_middle"] = dc.donchian_channel_mband()
 
             # ── Volume ────────────────────────────────────────────────────────
-            df["OBV"] = ta.obv(df["close"], df["volume"])
-            df["VWMA_20"] = ta.vwma(df["close"], df["volume"], length=20)
-
-            ad = ta.ad(df["high"], df["low"], df["close"], df["volume"])
-            if ad is not None:
-                df["AD"] = ad
-
-            adx = ta.adx(df["high"], df["low"], df["close"], length=14)
-            if adx is not None and not adx.empty:
-                df["ADX_14"] = adx.get("ADX_14")
-                df["DMP_14"] = adx.get("DMP_14")
-                df["DMN_14"] = adx.get("DMN_14")
-
-            # VWAP (intra-day approximation)
-            df["VWAP"] = ta.vwap(df["high"], df["low"], df["close"], df["volume"])
-
-            # ── Candlestick patterns ──────────────────────────────────────────
-            # pandas-ta CDL patterns return +100, 0, or -100
-            pattern_funcs = {
-                "CDL_DOJI": ta.cdl_doji,
-                "CDL_HAMMER": ta.cdl_hammer,
-                "CDL_SHOOTING_STAR": ta.cdl_shootingstar,
-                "CDL_ENGULFING": ta.cdl_inside,   # bullish/bearish engulf via inside
-                "CDL_MORNING_STAR": ta.cdl_morningstar,
-                "CDL_EVENING_STAR": ta.cdl_eveningstar,
-                "CDL_HARAMI": ta.cdl_harami,
-                "CDL_DRAGONFLY": ta.cdl_dragonfly_doji,
-                "CDL_GRAVESTONE": ta.cdl_gravestone_doji,
-                "CDL_THREE_BLACK": ta.cdl_3blackcrows,
-                "CDL_THREE_WHITE": ta.cdl_3whitesoldiers,
-            }
-            for col_name, fn in pattern_funcs.items():
-                try:
-                    result = fn(df["open"], df["high"], df["low"], df["close"])
-                    if result is not None:
-                        if isinstance(result, pd.DataFrame):
-                            df[col_name] = result.iloc[:, 0]
-                        else:
-                            df[col_name] = result
-                except Exception:
-                    pass  # Some patterns may not be available in all versions
+            df["OBV"]    = volm.OnBalanceVolumeIndicator(close, vol, fillna=False).on_balance_volume()
+            df["MFI_14"] = volm.MFIIndicator(high, low, close, vol, window=14, fillna=False).money_flow_index()
+            df["CMF_20"] = volm.ChaikinMoneyFlowIndicator(high, low, close, vol, window=20, fillna=False).chaikin_money_flow()
+            df["VWAP"]   = volm.VolumeWeightedAveragePrice(high, low, close, vol, window=14, fillna=False).volume_weighted_average_price()
 
             # ── Derived / Price-Action ────────────────────────────────────────
-            df["candle_body"] = abs(df["close"] - df["open"])
-            df["candle_range"] = df["high"] - df["low"]
-            df["body_pct"] = df["candle_body"] / df["candle_range"].replace(0, float("nan"))
-            df["upper_wick"] = df["high"] - df[["open", "close"]].max(axis=1)
-            df["lower_wick"] = df[["open", "close"]].min(axis=1) - df["low"]
-            df["close_pct_change"] = df["close"].pct_change() * 100
+            df["candle_body"]      = (close - df["open"]).abs()
+            df["candle_range"]     = high - low
+            df["body_pct"]         = df["candle_body"] / df["candle_range"].replace(0, float("nan"))
+            df["upper_wick"]       = high - df[["open", "close"]].max(axis=1)
+            df["lower_wick"]       = df[["open", "close"]].min(axis=1) - low
+            df["close_pct_change"] = close.pct_change() * 100
 
-            # Volume ratio vs 20-bar average
-            vol_ma = df["volume"].rolling(20).mean()
-            df["volume_ratio"] = df["volume"] / vol_ma.replace(0, float("nan"))
+            vol_ma = vol.rolling(20).mean()
+            df["volume_ratio"] = vol / vol_ma.replace(0, float("nan"))
 
-            # EMA cross signals
+            # EMA cross signals: +1 = bullish cross, -1 = bearish cross, 0 = no cross
             df["ema_20_50_cross"] = (
                 (df["EMA_20"] > df["EMA_50"]).astype(int) -
                 (df["EMA_20"].shift(1) > df["EMA_50"].shift(1)).astype(int)
-            )  # +1 = bullish cross, -1 = bearish cross
-
+            )
             df["ema_50_200_cross"] = (
                 (df["EMA_50"] > df["EMA_200"]).astype(int) -
                 (df["EMA_50"].shift(1) > df["EMA_200"].shift(1)).astype(int)
             )
 
+            # Candlestick patterns (pure price-action, no TA-Lib required)
+            df = _add_candle_patterns(df)
+
         except Exception as e:
-            logger.warning("populate_indicators error: %s", e)
+            logger.warning("populate_indicators error: %s", e, exc_info=True)
 
         return df
 
     def populate_entry_signal(self, df: pd.DataFrame) -> pd.DataFrame:
         """
         Override in subclasses. Must add column 'entry_signal' (1=buy, 0=no).
-        Default: EMA20 > EMA50 AND RSI14 < 70 AND close > VWAP.
+        Default: EMA20 > EMA50 AND RSI14 40-70 AND MACD hist > 0 AND ADX > 20.
         """
-        if "EMA_20" not in df.columns or "EMA_50" not in df.columns:
+        if "EMA_20" not in df.columns:
             df["entry_signal"] = 0
             return df
         df["entry_signal"] = (
@@ -232,6 +204,62 @@ class BaseStrategy:
             (df["ema_20_50_cross"] == -1)
         ).astype(int)
         return df
+
+
+def _add_candle_patterns(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Pure price-action candlestick pattern detection (no TA-Lib required).
+    Each column is +100 (bullish), -100 (bearish), or 0.
+    """
+    o, h, l, c = df["open"], df["high"], df["low"], df["close"]
+    body  = (c - o).abs()
+    rng   = (h - l).replace(0, float("nan"))
+    upper = h - df[["open", "close"]].max(axis=1)
+    lower = df[["open", "close"]].min(axis=1) - l
+
+    # Doji: body < 10% of range
+    df["CDL_DOJI"] = ((body / rng) < 0.1).map({True: 100, False: 0})
+
+    # Hammer: lower wick > 2× body, upper wick < body, bullish
+    df["CDL_HAMMER"] = (
+        (lower > 2 * body) & (upper < body) & (c > o)
+    ).map({True: 100, False: 0})
+
+    # Shooting Star: upper wick > 2× body, lower wick < body, bearish
+    df["CDL_SHOOTING_STAR"] = (
+        (upper > 2 * body) & (lower < body) & (c < o)
+    ).map({True: -100, False: 0})
+
+    # Bullish Engulfing
+    prev_o, prev_c = o.shift(1), c.shift(1)
+    df["CDL_BULL_ENGULFING"] = (
+        (prev_c < prev_o) & (c > o) & (o < prev_c) & (c > prev_o)
+    ).map({True: 100, False: 0})
+
+    # Bearish Engulfing
+    df["CDL_BEAR_ENGULFING"] = (
+        (prev_c > prev_o) & (c < o) & (o > prev_c) & (c < prev_o)
+    ).map({True: -100, False: 0})
+
+    # Bullish Harami
+    prev_body = (prev_c - prev_o).abs()
+    df["CDL_BULL_HARAMI"] = (
+        (prev_c < prev_o) & (c > o) &
+        (o > prev_c) & (c < prev_o) &
+        (body < prev_body * 0.5)
+    ).map({True: 100, False: 0})
+
+    # Dragonfly Doji: very small body + upper wick
+    df["CDL_DRAGONFLY"] = (
+        ((body / rng) < 0.1) & (upper < rng * 0.1)
+    ).map({True: 100, False: 0})
+
+    # Gravestone Doji: very small body + lower wick
+    df["CDL_GRAVESTONE"] = (
+        ((body / rng) < 0.1) & (lower < rng * 0.1)
+    ).map({True: -100, False: 0})
+
+    return df
 
 
 class CodeStrategy(BaseStrategy):
@@ -274,10 +302,11 @@ DEFAULT_STRATEGY_CODE = '''
 # The DataFrame 'df' already contains all indicators added by BaseStrategy.
 # Available columns include: open, high, low, close, volume, timestamp,
 #   EMA_8/20/50/200, RSI_7/14/21, MACD/MACD_signal/MACD_hist,
-#   BB_upper_20/BB_lower_20, ATR_14, ADX_14, STOCH_K/D, OBV, VWAP, and more.
+#   BB_upper_20/BB_lower_20/BB_pct_20, ATR_14, ADX_14, STOCH_K/D,
+#   OBV, VWAP, MFI_14, WILLR_14, volume_ratio, CDL_HAMMER, and more.
 #
-# Required: populate_entry_signal(df) → return df with column 'entry_signal' (1/0)
-# Optional: populate_exit_signal(df)  → return df with column 'exit_signal' (1/0)
+# Required: populate_entry_signal(df) → return df with column \'entry_signal\' (1/0)
+# Optional: populate_exit_signal(df)  → return df with column \'exit_signal\' (1/0)
 
 def populate_entry_signal(df):
     """

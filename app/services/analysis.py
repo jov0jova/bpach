@@ -17,6 +17,7 @@ from ..utils.parquet import parquet_path
 logger = logging.getLogger(__name__)
 
 # Indicators to include in the snapshot (subset for performance)
+# Column names match the `ta` library output used in strategies/base.py
 SNAPSHOT_INDICATORS = [
     "RSI_14", "RSI_7", "RSI_21",
     "MACD", "MACD_signal", "MACD_hist",
@@ -24,10 +25,11 @@ SNAPSHOT_INDICATORS = [
     "ATR_14", "ADX_14", "DMP_14", "DMN_14",
     "BB_upper_20", "BB_lower_20", "BB_pct_20", "BB_width_20",
     "STOCH_K", "STOCH_D", "STOCHRSI_K",
-    "MFI_14", "CCI_20", "WILLR_14", "ROC_10",
-    "OBV", "volume_ratio",
+    "MFI_14", "WILLR_14", "ROC_10", "CMF_20",
+    "OBV", "VWAP", "volume_ratio",
     "body_pct", "upper_wick", "lower_wick", "close_pct_change",
-    "SUPERT_dir", "ema_20_50_cross", "ema_50_200_cross",
+    "ema_20_50_cross", "ema_50_200_cross",
+    "AROON_up", "AROON_down", "AO",
 ]
 
 

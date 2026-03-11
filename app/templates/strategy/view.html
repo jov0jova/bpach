@@ -86,11 +86,11 @@
           <div class="caf-col-list">
             {% set indicator_groups = [
               ('Price', ['open', 'high', 'low', 'close', 'volume', 'timestamp']),
-              ('Trend', ['EMA_8', 'EMA_20', 'EMA_50', 'EMA_200', 'SMA_20', 'SMA_50', 'SUPERT', 'SUPERT_dir', 'PSAR_long']),
-              ('Momentum', ['RSI_7', 'RSI_14', 'RSI_21', 'MACD', 'MACD_signal', 'MACD_hist', 'STOCH_K', 'STOCH_D', 'STOCHRSI_K', 'MFI_14', 'CCI_20', 'WILLR_14', 'ROC_10']),
-              ('Volatility', ['ATR_14', 'BB_upper_20', 'BB_lower_20', 'BB_pct_20', 'BB_width_20', 'KC_upper', 'KC_lower']),
-              ('Volume', ['OBV', 'ADX_14', 'DMP_14', 'DMN_14', 'VWAP', 'VWMA_20', 'volume_ratio']),
-              ('Derived', ['ema_20_50_cross', 'ema_50_200_cross', 'candle_body', 'body_pct', 'upper_wick', 'lower_wick']),
+              ('Trend', ['EMA_8', 'EMA_20', 'EMA_50', 'EMA_200', 'SMA_20', 'SMA_50', 'ICH_tenkan', 'ICH_kijun', 'PSAR_up', 'PSAR_down', 'AROON_up', 'AROON_down']),
+              ('Momentum', ['RSI_7', 'RSI_14', 'RSI_21', 'MACD', 'MACD_signal', 'MACD_hist', 'STOCH_K', 'STOCH_D', 'STOCHRSI_K', 'MFI_14', 'WILLR_14', 'ROC_10', 'AO', 'KAMA']),
+              ('Volatility', ['ATR_7', 'ATR_14', 'ATR_21', 'BB_upper_20', 'BB_lower_20', 'BB_pct_20', 'BB_width_20', 'KC_upper', 'KC_lower', 'DC_upper', 'DC_lower']),
+              ('Volume', ['OBV', 'ADX_14', 'DMP_14', 'DMN_14', 'VWAP', 'MFI_14', 'CMF_20', 'volume_ratio']),
+              ('Derived', ['ema_20_50_cross', 'ema_50_200_cross', 'candle_body', 'body_pct', 'upper_wick', 'lower_wick', 'close_pct_change']),
             ] %}
             {% for group, cols in indicator_groups %}
             <div class="mb-2">
