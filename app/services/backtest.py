@@ -1,6 +1,6 @@
 """
 Phase 6: Backtesting engine.
-Uses vectorbt for fast backtesting with walk-forward optimization via Optuna.
+Pure-Python walk-forward backtesting with Optuna OOS validation.
 """
 import logging
 import uuid
@@ -30,54 +30,6 @@ def _load_enriched_df(parquet_dir, session_id, symbol, timeframe) -> Optional[pd
     if "entry_signal" not in df.columns:
         return None
     return df
-
-
-def _vectorbt_backtest(df: pd.DataFrame, initial_capital: float,
-                       fee_rate: float, slippage: float,
-                       position_size: float) -> dict:
-    """
-    Run a simple long-only backtest on a single symbol using vectorbt.
-    Returns metrics dict.
-    """
-    try:
-        import vectorbt as vbt
-    except ImportError:
-        return _simple_backtest(df, initial_capital, fee_rate, slippage, position_size)
-
-    try:
-        entries = df["entry_signal"].fillna(0).astype(bool)
-        exits = df["exit_signal"].fillna(0).astype(bool) if "exit_signal" in df.columns else ~entries
-
-        close = df["close"].values
-        timestamps = df["timestamp"]
-
-        pf = vbt.Portfolio.from_signals(
-            close,
-            entries=entries.values,
-            exits=exits.values,
-            init_cash=initial_capital,
-            fees=fee_rate,
-            slippage=slippage,
-            size=position_size,
-            size_type="percent",
-            freq="1T",  # Will be overridden by actual timestamps in production
-        )
-
-        stats = pf.stats()
-        return {
-            "total_trades": int(pf.trades.count()),
-            "win_rate": float(pf.trades.win_rate() or 0),
-            "profit_factor": float(stats.get("Profit Factor", 0) or 0),
-            "sharpe_ratio": float(stats.get("Sharpe Ratio", 0) or 0),
-            "max_drawdown": float(abs(stats.get("Max Drawdown [%]", 0) or 0)),
-            "total_return": float(stats.get("Total Return [%]", 0) or 0),
-            "equity": pf.value().tolist(),
-            "timestamps": timestamps.astype(str).tolist(),
-            "trades_df": pf.trades.records_readable,
-        }
-    except Exception as e:
-        logger.debug("vectorbt error, falling back: %s", e)
-        return _simple_backtest(df, initial_capital, fee_rate, slippage, position_size)
 
 
 def _simple_backtest(df: pd.DataFrame, initial_capital: float,
