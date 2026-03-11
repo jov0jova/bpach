@@ -1,0 +1,171 @@
+{% extends "base.html" %}
+{% block title %}Entry Analysis Results – {{ session.name }}{% endblock %}
+
+{% block content %}
+<div class="mt-3 mb-4 d-flex align-items-center justify-content-between">
+  <div>
+    <h2 class="mb-0"><i class="bi bi-bar-chart-steps me-2 text-success"></i>Path A — Entry Analysis Results</h2>
+    <small class="text-muted">Winner vs. loser indicator discrimination — ranked by Cohen's D effect size.</small>
+  </div>
+  <a href="{{ url_for('entry_logic.entry_logic_view', session_id=session.id) }}"
+     class="btn btn-outline-secondary btn-sm">
+    <i class="bi bi-arrow-left me-1"></i>Back to Entry Logic
+  </a>
+</div>
+
+{% if not result or not result.get('top_indicators') %}
+<div class="text-center py-5 text-muted">
+  <i class="bi bi-bar-chart display-3"></i>
+  <p class="mt-3">No results yet. Run the analysis from the Entry Logic page first.</p>
+  <a href="{{ url_for('entry_logic.entry_logic_view', session_id=session.id) }}"
+     class="btn btn-outline-warning mt-2">Go to Entry Logic →</a>
+</div>
+{% else %}
+
+<!-- Summary stats row -->
+<div class="row g-3 mb-4">
+  {% set stats = [
+    ('total_entries', result.total_entries, 'Entry Signals Found', 'bi-crosshair', 'text-primary'),
+    ('winners', result.winners, 'Winners', 'bi-arrow-up-circle-fill', 'text-success'),
+    ('losers', result.losers, 'Losers', 'bi-arrow-down-circle-fill', 'text-danger'),
+  ] %}
+  {% for key, val, label, icon, color in stats %}
+  <div class="col-sm-4 col-lg-2">
+    <div class="card caf-card text-center py-3">
+      <i class="bi {{ icon }} {{ color }} fs-4 mb-1"></i>
+      <div class="h4 mb-0 {{ color }}">{{ val }}</div>
+      <small class="text-muted">{{ label }}</small>
+    </div>
+  </div>
+  {% endfor %}
+  <div class="col-sm-4 col-lg-2">
+    <div class="card caf-card text-center py-3">
+      <i class="bi bi-percent text-warning fs-4 mb-1"></i>
+      <div class="h4 mb-0 text-warning">{{ '%.1f%%' | format(result.win_rate * 100) }}</div>
+      <small class="text-muted">Win Rate</small>
+    </div>
+  </div>
+  <div class="col-sm-4 col-lg-2">
+    <div class="card caf-card text-center py-3">
+      <i class="bi bi-graph-up text-success fs-4 mb-1"></i>
+      <div class="h4 mb-0 text-success">{{ '%+.2f%%' | format(result.avg_winner_pnl) }}</div>
+      <small class="text-muted">Avg Winner</small>
+    </div>
+  </div>
+  <div class="col-sm-4 col-lg-2">
+    <div class="card caf-card text-center py-3">
+      <i class="bi bi-graph-down text-danger fs-4 mb-1"></i>
+      <div class="h4 mb-0 text-danger">{{ '%+.2f%%' | format(result.avg_loser_pnl) }}</div>
+      <small class="text-muted">Avg Loser</small>
+    </div>
+  </div>
+</div>
+
+<!-- Entry condition recap -->
+<div class="card caf-card mb-4">
+  <div class="card-header caf-card-header">
+    <i class="bi bi-code-square me-2 text-warning"></i>Entry Condition
+    <span class="badge bg-dark ms-2">{{ result.direction | upper }}</span>
+    <span class="badge bg-secondary ms-1">Hold {{ result.hold_bars }} bars</span>
+    <span class="badge bg-secondary ms-1">Win threshold {{ result.min_profit_pct }}%</span>
+  </div>
+  <div class="card-body">
+    <pre class="caf-code-block mb-0 text-warning">{{ result.entry_condition }}</pre>
+  </div>
+</div>
+
+<!-- Top discriminative indicators -->
+<h5 class="mb-3">
+  <i class="bi bi-trophy me-2 text-warning"></i>
+  Most Discriminative Indicators
+  <span class="text-muted fw-normal fs-6 ms-2">— ranked by |Cohen's D| effect size</span>
+</h5>
+
+<div class="card caf-card mb-4">
+  <div class="table-responsive">
+    <table class="table caf-table mb-0">
+      <thead>
+        <tr>
+          <th>#</th>
+          <th>Indicator</th>
+          <th>|Cohen's D|</th>
+          <th>Winners avg</th>
+          <th>Losers avg</th>
+          <th>Suggested Filter</th>
+          <th>Effect</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for ind in result.top_indicators %}
+        <tr>
+          <td class="text-muted">{{ loop.index }}</td>
+          <td><code class="text-warning">{{ ind.col }}</code></td>
+          <td>
+            <div class="d-flex align-items-center gap-2">
+              <div class="progress flex-grow-1" style="height:6px;width:80px">
+                <div class="progress-bar bg-{{ 'success' if ind.abs_d > 0.5 else 'warning' if ind.abs_d > 0.2 else 'secondary' }}"
+                     style="width: {{ [ind.abs_d * 50, 100] | min }}%"></div>
+              </div>
+              <span class="fw-semibold {{ 'text-success' if ind.abs_d > 0.5 else 'text-warning' if ind.abs_d > 0.2 else 'text-muted' }}">
+                {{ '%.3f' | format(ind.abs_d) }}
+              </span>
+            </div>
+          </td>
+          <td class="text-success">{{ '%.4g' | format(ind.winner_mean) }}</td>
+          <td class="text-danger">{{ '%.4g' | format(ind.loser_mean) }}</td>
+          <td>
+            <code class="text-info">{{ ind.col }} {{ ind.operator }} {{ ind.threshold }}</code>
+          </td>
+          <td>
+            {% if ind.abs_d > 0.8 %}
+            <span class="badge bg-success">Large</span>
+            {% elif ind.abs_d > 0.5 %}
+            <span class="badge bg-warning text-dark">Medium</span>
+            {% else %}
+            <span class="badge bg-secondary">Small</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- Suggested filter rules to add -->
+<div class="card caf-card mb-4">
+  <div class="card-header caf-card-header">
+    <i class="bi bi-lightbulb-fill me-2 text-warning"></i>Suggested Entry Filter Rules
+    <small class="text-muted ms-2">— copy these into Algo Finder (Path A) or your strategy</small>
+  </div>
+  <div class="card-body">
+    <p class="text-muted small mb-3">
+      These filters, combined with your base entry condition, are most likely to
+      separate winning trades from losers. Use the top 2–4 for best results.
+    </p>
+    <div class="caf-code-block">
+      <pre class="mb-0 text-info">{{ result.entry_condition }}
+{% for ind in result.top_indicators[:5] %}  and {{ ind.col }} {{ ind.operator }} {{ ind.threshold }}  # Cohen's D={{ ind.cohens_d }}
+{% endfor %}</pre>
+    </div>
+  </div>
+</div>
+
+<!-- Next step buttons -->
+<div class="d-flex gap-3 flex-wrap">
+  <a href="{{ url_for('algofinder.algofinder_view', session_id=session.id) }}"
+     class="btn btn-danger">
+    <i class="bi bi-search-heart me-1"></i>Run Algo Finder (Path A) →
+  </a>
+  <a href="{{ url_for('indicators.indicators_view', session_id=session.id) }}"
+     class="btn btn-outline-warning">
+    <i class="bi bi-graph-up-arrow me-1"></i>Add / Re-add Indicators
+  </a>
+  <a href="{{ url_for('entry_logic.entry_logic_view', session_id=session.id) }}"
+     class="btn btn-outline-secondary">
+    <i class="bi bi-arrow-left me-1"></i>Edit Entry Logic
+  </a>
+</div>
+
+{% endif %}
+{% endblock %}

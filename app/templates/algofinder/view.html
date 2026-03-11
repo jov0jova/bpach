@@ -4,8 +4,29 @@
 {% block content %}
 <div class="mt-3 mb-4">
   <h2 class="mb-0"><i class="bi bi-search-heart-fill me-2 text-danger"></i>Phase 8 — Algo Finder</h2>
-  <small class="text-muted">Automatically discover the best indicator combinations using Optuna + walk-forward OOS validation.</small>
+  <small class="text-muted">Discover strategies via Optuna + walk-forward OOS validation.</small>
 </div>
+
+<!-- Mode banner -->
+{% if session.entry_mode == 'path_a' and session.entry_logic %}
+<div class="alert alert-warning d-flex align-items-center gap-2 py-2 mb-3">
+  <i class="bi bi-funnel-fill"></i>
+  <div>
+    <strong>Path A active</strong> — entry logic is fixed, Optuna tunes complementary filter thresholds.
+    {% if not path_a_result.get('top_indicators') %}
+    <a href="{{ url_for('entry_logic.entry_logic_view', session_id=session.id) }}"
+       class="ms-2 btn btn-sm btn-outline-warning">Run Entry Analysis first →</a>
+    {% endif %}
+  </div>
+</div>
+{% else %}
+<div class="alert alert-info d-flex align-items-center gap-2 py-2 mb-3">
+  <i class="bi bi-shuffle"></i>
+  <strong>Path B active</strong> — free search across all indicators.
+  <a href="{{ url_for('entry_logic.entry_logic_view', session_id=session.id) }}"
+     class="ms-2 btn btn-sm btn-outline-info">Define entry logic for Path A →</a>
+</div>
+{% endif %}
 
 <div class="row g-4">
   <div class="col-lg-4">
@@ -13,11 +34,33 @@
       <div class="card-header caf-card-header"><i class="bi bi-sliders me-2"></i>Search Settings</div>
       <div class="card-body">
         <form method="post" action="{{ url_for('algofinder.run', session_id=session.id) }}">
+
+          <div class="mb-3">
+            <label class="form-label small">Search Mode</label>
+            <div class="d-flex gap-3">
+              <div class="form-check">
+                <input class="form-check-input" type="radio" name="mode" value="path_b"
+                       id="mode-b" {% if session.entry_mode != 'path_a' %}checked{% endif %}>
+                <label class="form-check-label small" for="mode-b">
+                  <span class="text-info">Path B</span> — Free search
+                </label>
+              </div>
+              <div class="form-check">
+                <input class="form-check-input" type="radio" name="mode" value="path_a"
+                       id="mode-a" {% if session.entry_mode == 'path_a' %}checked{% endif %}
+                       {% if not session.entry_logic %}disabled title="Define entry logic first"{% endif %}>
+                <label class="form-check-label small" for="mode-a">
+                  <span class="text-warning">Path A</span> — My logic + filters
+                </label>
+              </div>
+            </div>
+          </div>
+
           <div class="mb-3">
             <label class="form-label small">Number of Trials</label>
             <input type="number" name="n_trials" class="form-control caf-input form-control-sm"
                    value="50" min="10" max="500">
-            <small class="text-muted">More trials = better results, but slower. 50 is a good start.</small>
+            <small class="text-muted">More trials = better results, but slower.</small>
           </div>
           <div class="mb-3">
             <label class="form-label small">Initial Capital ($)</label>
@@ -26,14 +69,24 @@
           </div>
 
           <div class="mb-3 p-2 bg-dark rounded border small text-muted">
-            <div class="fw-semibold text-light mb-1">Search Space</div>
-            <div>RSI period: 7–21</div>
-            <div>RSI entry threshold: 20–50</div>
-            <div>EMA fast: 8–30</div>
-            <div>EMA slow: 20–100</div>
-            <div>ADX minimum: 15–35</div>
-            <div>BB %B threshold, Volume ratio</div>
-            <div>MACD histogram, Supertrend</div>
+            <div class="fw-semibold text-light mb-1">
+              {% if session.entry_mode == 'path_a' and path_a_result.get('top_indicators') %}
+              Path A Filter Space
+              {% else %}
+              Path B Search Space
+              {% endif %}
+            </div>
+            {% if session.entry_mode == 'path_a' and path_a_result.get('top_indicators') %}
+              {% for ind in path_a_result.top_indicators[:5] %}
+              <div><code class="text-warning">{{ ind.col }}</code> {{ ind.operator }} ? — |D|={{ ind.abs_d }}</div>
+              {% endfor %}
+              <div class="mt-1 text-muted">Exit: RSI threshold, period</div>
+            {% else %}
+              <div>RSI period: 7–21 · RSI entry: 20–50</div>
+              <div>EMA fast: 8–30 · EMA slow: 20–100</div>
+              <div>ADX: 15–35 · BB %B, Volume ratio</div>
+              <div>MACD histogram, Supertrend</div>
+            {% endif %}
           </div>
 
           <button type="submit" class="btn btn-danger w-100"

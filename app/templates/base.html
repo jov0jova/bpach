@@ -42,10 +42,10 @@
       <i class="bi bi-list-check me-2"></i>
       <span class="phase-num">3</span> Pairlist
     </a>
-    <a class="nav-link caf-nav-link {% if request.endpoint and 'strategy' in request.endpoint %}active{% endif %}"
-       href="{{ url_for('strategy.strategy_view', session_id=session.id) }}">
-      <i class="bi bi-code-slash me-2"></i>
-      <span class="phase-num">4</span> Strategy
+    <a class="nav-link caf-nav-link {% if request.endpoint and 'entry_logic' in request.endpoint %}active{% endif %}"
+       href="{{ url_for('entry_logic.entry_logic_view', session_id=session.id) }}">
+      <i class="bi bi-funnel-fill me-2"></i>
+      <span class="phase-num">4</span> Entry Logic
     </a>
     <a class="nav-link caf-nav-link {% if request.endpoint and 'indicators' in request.endpoint %}active{% endif %}"
        href="{{ url_for('indicators.indicators_view', session_id=session.id) }}">

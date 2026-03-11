@@ -67,7 +67,7 @@ def new_session():
 
 @bp.route("/<session_id>")
 def detail(session_id):
-    session = db.get_session(session_id)
+    session = db.get_session_extended(session_id)
     if not session:
         flash("Session not found.", "error")
         return redirect(url_for("sessions.list_sessions"))
@@ -83,6 +83,7 @@ def detail(session_id):
         "backtest": db.get_latest_task(session_id, "backtest"),
         "analysis": db.get_latest_task(session_id, "analysis"),
         "algofinder": db.get_latest_task(session_id, "algofinder"),
+        "path_a_analysis": db.get_latest_task(session_id, "path_a_analysis"),
     }
 
     return render_template("sessions/detail.html",

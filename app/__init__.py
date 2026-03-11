@@ -43,6 +43,7 @@ def create_app(config_class=Config) -> Flask:
     from .routes.sessions import bp as sessions_bp
     from .routes.data import bp as data_bp
     from .routes.pairlist import bp as pairlist_bp
+    from .routes.entry_logic import bp as entry_logic_bp
     from .routes.strategy import bp as strategy_bp
     from .routes.indicators import bp as indicators_bp
     from .routes.backtest import bp as backtest_bp
@@ -53,6 +54,7 @@ def create_app(config_class=Config) -> Flask:
     app.register_blueprint(sessions_bp, url_prefix="/sessions")
     app.register_blueprint(data_bp, url_prefix="/data")
     app.register_blueprint(pairlist_bp, url_prefix="/pairlist")
+    app.register_blueprint(entry_logic_bp, url_prefix="/entry_logic")
     app.register_blueprint(strategy_bp, url_prefix="/strategy")
     app.register_blueprint(indicators_bp, url_prefix="/indicators")
     app.register_blueprint(backtest_bp, url_prefix="/backtest")

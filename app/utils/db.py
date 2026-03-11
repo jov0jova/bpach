@@ -79,3 +79,15 @@ def save_algo_result(session_id, run_id, rank, strategy_name, params, rules_desc
 
 def list_algo_results(session_id):
     return m.list_algo_results(db_path(), session_id)
+
+def save_entry_logic(session_id, entry_logic, entry_mode):
+    return m.save_entry_logic(db_path(), session_id, entry_logic, entry_mode)
+
+def save_pairlist_config(session_id, config):
+    return m.save_pairlist_config(db_path(), session_id, config)
+
+def get_session_extended(session_id):
+    return m.get_session_extended(db_path(), session_id)
+
+def save_entry_analysis_result(session_id, result):
+    return m.save_entry_analysis_result(db_path(), session_id, result)

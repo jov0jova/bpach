@@ -1,0 +1,107 @@
+from flask import Blueprint, current_app, flash, redirect, render_template, request, url_for
+
+from ..tasks.runner import submit_task
+from ..services.entry_logic_analyzer import run_entry_analysis
+from ..utils import db
+
+bp = Blueprint("entry_logic", __name__)
+
+
+@bp.route("/<session_id>")
+def entry_logic_view(session_id):
+    session = db.get_session_extended(session_id)
+    if not session:
+        flash("Session not found.", "error")
+        return redirect(url_for("sessions.list_sessions"))
+
+    task = db.get_latest_task(session_id, "path_a_analysis")
+
+    return render_template("entry_logic/view.html",
+                           session=session,
+                           task=task)
+
+
+@bp.route("/<session_id>/save", methods=["POST"])
+def save_entry_logic(session_id):
+    session = db.get_session_extended(session_id)
+    if not session:
+        flash("Session not found.", "error")
+        return redirect(url_for("sessions.list_sessions"))
+
+    entry_logic = request.form.get("entry_logic", "").strip()
+    direction = request.form.get("direction", "long")
+
+    if not entry_logic:
+        flash("Entry logic cannot be empty. Use Skip to go Path B.", "error")
+        return redirect(url_for("entry_logic.entry_logic_view", session_id=session_id))
+
+    # Store with direction prefix for the analyzer
+    full_logic = f"# direction: {direction}\n{entry_logic}"
+    db.save_entry_logic(session_id, full_logic, "path_a")
+    flash("Entry logic saved. Now add indicators and run the analysis.", "success")
+    return redirect(url_for("indicators.indicators_view", session_id=session_id))
+
+
+@bp.route("/<session_id>/skip", methods=["POST"])
+def skip_to_path_b(session_id):
+    session = db.get_session_extended(session_id)
+    if not session:
+        flash("Session not found.", "error")
+        return redirect(url_for("sessions.list_sessions"))
+
+    db.save_entry_logic(session_id, "", "path_b")
+    flash("Skipped entry logic — using Path B (Optuna free search).", "info")
+    return redirect(url_for("indicators.indicators_view", session_id=session_id))
+
+
+@bp.route("/<session_id>/analyze", methods=["POST"])
+def run_analysis(session_id):
+    session = db.get_session_extended(session_id)
+    if not session:
+        flash("Session not found.", "error")
+        return redirect(url_for("sessions.list_sessions"))
+
+    if session.get("entry_mode") != "path_a" or not session.get("entry_logic", "").strip():
+        flash("No entry logic defined. Define entry logic first.", "error")
+        return redirect(url_for("entry_logic.entry_logic_view", session_id=session_id))
+
+    hold_bars = int(request.form.get("hold_bars", 10))
+    min_profit_pct = float(request.form.get("min_profit_pct", 0.5))
+
+    submit_task(
+        current_app.config["DB_PATH"],
+        session_id,
+        "path_a_analysis",
+        run_entry_analysis,
+        session_id,
+        current_app.config["PARQUET_DIR"],
+        session["timeframes"],
+        session["entry_logic"],
+        hold_bars,
+        min_profit_pct,
+    )
+
+    flash("Entry logic analysis started.", "info")
+    return redirect(url_for("entry_logic.entry_logic_view", session_id=session_id))
+
+
+@bp.route("/<session_id>/status")
+def status(session_id):
+    task = db.get_latest_task(session_id, "path_a_analysis")
+    return render_template("partials/task_progress.html", task=task)
+
+
+@bp.route("/<session_id>/results")
+def analysis_results(session_id):
+    session = db.get_session_extended(session_id)
+    if not session:
+        flash("Session not found.", "error")
+        return redirect(url_for("sessions.list_sessions"))
+
+    task = db.get_latest_task(session_id, "path_a_analysis")
+    result = task.get("result", {}) if task else {}
+
+    return render_template("entry_logic/results.html",
+                           session=session,
+                           task=task,
+                           result=result)

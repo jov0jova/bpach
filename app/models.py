@@ -18,17 +18,30 @@ def init_db(db_path: str | Path) -> None:
     con = _conn(db_path)
     con.execute("""
         CREATE TABLE IF NOT EXISTS sessions (
-            id          TEXT PRIMARY KEY,
-            name        TEXT NOT NULL,
-            exchange    TEXT NOT NULL DEFAULT 'binance',
-            timeframes  TEXT NOT NULL DEFAULT '["15m","1h","4h"]',
-            quote_asset TEXT NOT NULL DEFAULT 'USDT',
-            status      TEXT NOT NULL DEFAULT 'created',
-            created_at  TIMESTAMP NOT NULL,
-            updated_at  TIMESTAMP NOT NULL,
-            notes       TEXT DEFAULT ''
+            id              TEXT PRIMARY KEY,
+            name            TEXT NOT NULL,
+            exchange        TEXT NOT NULL DEFAULT 'binance',
+            timeframes      TEXT NOT NULL DEFAULT '["15m","1h","4h"]',
+            quote_asset     TEXT NOT NULL DEFAULT 'USDT',
+            status          TEXT NOT NULL DEFAULT 'created',
+            created_at      TIMESTAMP NOT NULL,
+            updated_at      TIMESTAMP NOT NULL,
+            notes           TEXT DEFAULT '',
+            entry_logic     TEXT DEFAULT '',
+            entry_mode      TEXT NOT NULL DEFAULT 'path_b',
+            pairlist_config TEXT DEFAULT '[]'
         )
     """)
+    # Migrate existing sessions tables that may be missing the new columns
+    for col, typedef in [
+        ("entry_logic",     "TEXT DEFAULT ''"),
+        ("entry_mode",      "TEXT NOT NULL DEFAULT 'path_b'"),
+        ("pairlist_config", "TEXT DEFAULT '[]'"),
+    ]:
+        try:
+            con.execute(f"ALTER TABLE sessions ADD COLUMN {col} {typedef}")
+        except Exception:
+            pass  # column already exists
 
     con.execute("""
         CREATE TABLE IF NOT EXISTS pairs (
@@ -483,6 +496,64 @@ def save_algo_result(db_path, session_id: str, run_id: str, rank: int,
         datetime.now(timezone.utc)
     ])
     con.close()
+
+
+# ── Entry Logic & Pairlist Config ────────────────────────────────────────────
+
+def save_entry_logic(db_path, session_id: str, entry_logic: str, entry_mode: str) -> None:
+    con = _conn(db_path)
+    con.execute(
+        "UPDATE sessions SET entry_logic=?, entry_mode=?, updated_at=? WHERE id=?",
+        [entry_logic, entry_mode, datetime.now(timezone.utc), session_id]
+    )
+    con.close()
+
+
+def save_pairlist_config(db_path, session_id: str, config: list) -> None:
+    con = _conn(db_path)
+    con.execute(
+        "UPDATE sessions SET pairlist_config=?, updated_at=? WHERE id=?",
+        [json.dumps(config), datetime.now(timezone.utc), session_id]
+    )
+    con.close()
+
+
+def get_session_extended(db_path, session_id: str) -> dict | None:
+    """Like get_session but also returns entry_logic, entry_mode, pairlist_config."""
+    con = _conn(db_path)
+    row = con.execute("SELECT * FROM sessions WHERE id=?", [session_id]).fetchone()
+    con.close()
+    if not row:
+        return None
+    cols = ["id", "name", "exchange", "timeframes", "quote_asset", "status",
+            "created_at", "updated_at", "notes", "entry_logic", "entry_mode", "pairlist_config"]
+    # Handle tables created before migration (fewer columns)
+    d = dict(zip(cols[:len(row)], row))
+    d.setdefault("entry_logic", "")
+    d.setdefault("entry_mode", "path_b")
+    d.setdefault("pairlist_config", "[]")
+    d["timeframes"] = json.loads(d["timeframes"])
+    try:
+        d["pairlist_config"] = json.loads(d["pairlist_config"] or "[]")
+    except Exception:
+        d["pairlist_config"] = []
+    return d
+
+
+# ── Entry Logic Analysis Results ──────────────────────────────────────────────
+
+def save_entry_analysis_result(db_path, session_id: str, result: dict) -> None:
+    """Persist the winner/loser indicator discrimination result as a task result."""
+    con = _conn(db_path)
+    now = datetime.now(timezone.utc)
+    tid = str(uuid.uuid4())
+    con.execute(
+        "INSERT INTO tasks VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+        [tid, session_id, "path_a_analysis", "done", 1, 1,
+         "Analysis complete", json.dumps(result), "", now, now]
+    )
+    con.close()
+    return tid
 
 
 def list_algo_results(db_path, session_id: str) -> list:

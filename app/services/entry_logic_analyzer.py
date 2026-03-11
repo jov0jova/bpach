@@ -1,0 +1,291 @@
+"""
+Path A: Entry Logic Analyzer.
+
+Given a user-defined entry condition (Python expression using indicator column names),
+this service:
+1. Evaluates the condition on all historical candles to find entry points.
+2. Simulates holding each entry for `hold_bars` candles, classifying each as
+   a winner (return > min_profit_pct) or loser.
+3. Computes Cohen's D for every indicator between winners and losers.
+4. Derives suggested threshold ranges from the winner distribution.
+5. Returns the top discriminative indicators with recommended filter rules.
+"""
+import logging
+import re
+from pathlib import Path
+from typing import Optional
+
+import numpy as np
+import pandas as pd
+
+from .. import models as m
+from ..strategies.base import BaseStrategy
+from ..utils.parquet import parquet_path
+
+logger = logging.getLogger(__name__)
+
+# Indicators to compare between winners and losers
+ANALYSIS_INDICATORS = [
+    "RSI_14", "RSI_7", "RSI_21",
+    "MACD", "MACD_signal", "MACD_hist",
+    "EMA_8", "EMA_20", "EMA_50", "EMA_200",
+    "ATR_14", "ADX_14",
+    "BB_pct_20", "BB_width_20",
+    "STOCH_K", "STOCH_D", "STOCHRSI_K",
+    "MFI_14", "WILLR_14", "ROC_10", "CMF_20",
+    "volume_ratio",
+    "body_pct", "upper_wick", "lower_wick", "close_pct_change",
+    "ema_20_50_cross", "ema_50_200_cross",
+    "AROON_up", "AROON_down", "AO",
+    "SUPERT_dir",
+]
+
+
+def _parse_direction(entry_logic: str) -> tuple[str, str]:
+    """Extract direction comment and return clean code."""
+    direction = "long"
+    lines = entry_logic.strip().splitlines()
+    clean = []
+    for line in lines:
+        m = re.match(r"#\s*direction:\s*(\w+)", line.strip())
+        if m:
+            direction = m.group(1).lower()
+        else:
+            clean.append(line)
+    return direction, "\n".join(clean).strip()
+
+
+def _eval_entry_condition(df: pd.DataFrame, condition_code: str) -> pd.Series:
+    """
+    Evaluate a Python boolean expression against a DataFrame row-by-row.
+    The expression can reference any column name directly.
+    Returns a boolean Series.
+    """
+    # Build a namespace from the DataFrame columns
+    ns = {col: df[col] for col in df.columns if col.isidentifier()}
+    ns.update({"pd": pd, "np": np})
+    try:
+        result = eval(condition_code, {"__builtins__": {}}, ns)  # noqa: S307
+        if isinstance(result, pd.Series):
+            return result.fillna(False).astype(bool)
+        return pd.Series(bool(result), index=df.index)
+    except Exception as e:
+        logger.warning("Entry condition eval failed: %s", e)
+        return pd.Series(False, index=df.index)
+
+
+def _simulate_entries(df: pd.DataFrame, entry_mask: pd.Series,
+                      hold_bars: int, min_profit_pct: float,
+                      fee_rate: float = 0.001, slippage: float = 0.0005) -> list[dict]:
+    """
+    For each entry signal, simulate holding for hold_bars candles.
+    Returns list of dicts: {entry_idx, is_winner, pnl_pct, indicator_snapshot}
+    """
+    close = df["close"].values
+    entries = []
+    entry_indices = entry_mask[entry_mask].index.tolist()
+
+    for idx in entry_indices:
+        i = df.index.get_loc(idx)
+        if i + hold_bars >= len(df):
+            continue
+        entry_price = close[i] * (1 + slippage)
+        exit_price = close[i + hold_bars] * (1 - slippage)
+        pnl_pct = (exit_price / entry_price - 1) * 100 - fee_rate * 200
+
+        # Snapshot indicator values at entry
+        snap = {}
+        for col in ANALYSIS_INDICATORS:
+            if col in df.columns:
+                val = df[col].iloc[i]
+                if pd.notna(val):
+                    snap[col] = float(val)
+
+        entries.append({
+            "entry_idx": i,
+            "pnl_pct": pnl_pct,
+            "is_winner": pnl_pct > min_profit_pct,
+            "snapshot": snap,
+        })
+
+    return entries
+
+
+def _cohens_d(a: np.ndarray, b: np.ndarray) -> float:
+    """Cohen's D = (mean_a - mean_b) / pooled_std"""
+    if len(a) < 2 or len(b) < 2:
+        return 0.0
+    pooled_std = np.sqrt((np.var(a, ddof=1) + np.var(b, ddof=1)) / 2)
+    if pooled_std < 1e-10:
+        return 0.0
+    return float((np.mean(a) - np.mean(b)) / pooled_std)
+
+
+def _suggest_filter(col: str, winner_vals: np.ndarray, loser_vals: np.ndarray,
+                    cohens_d_val: float) -> Optional[dict]:
+    """
+    Given winner and loser distributions for one indicator, suggest a filter rule.
+    Returns: {col, operator, threshold, description} or None.
+    """
+    w_mean = float(np.mean(winner_vals))
+    l_mean = float(np.mean(loser_vals))
+    w_p25 = float(np.percentile(winner_vals, 25))
+    w_p75 = float(np.percentile(winner_vals, 75))
+
+    # Determine direction: are winners consistently higher or lower?
+    if cohens_d_val > 0:
+        # Winners have higher values → use threshold above which winners cluster
+        operator = ">"
+        threshold = round(w_p25, 4)
+        description = f"{col} > {threshold:.4g}  (winners avg {w_mean:.4g}, losers avg {l_mean:.4g})"
+    else:
+        # Winners have lower values
+        operator = "<"
+        threshold = round(w_p75, 4)
+        description = f"{col} < {threshold:.4g}  (winners avg {w_mean:.4g}, losers avg {l_mean:.4g})"
+
+    return {
+        "col": col,
+        "operator": operator,
+        "threshold": threshold,
+        "winner_mean": round(w_mean, 4),
+        "loser_mean": round(l_mean, 4),
+        "winner_p25": round(w_p25, 4),
+        "winner_p75": round(w_p75, 4),
+        "cohens_d": round(cohens_d_val, 3),
+        "abs_d": round(abs(cohens_d_val), 3),
+        "description": description,
+    }
+
+
+def run_entry_analysis(task_id: str, db_path: Path, session_id: str,
+                       parquet_dir: Path, timeframes: list,
+                       entry_logic: str, hold_bars: int = 10,
+                       min_profit_pct: float = 0.5) -> None:
+    """
+    Background task: evaluate entry logic on all pairs, classify winners/losers,
+    run Cohen's D analysis, and store top discriminative indicators.
+    """
+    def progress(p, total, msg):
+        m.update_task(db_path, task_id, progress=p, total=total, message=msg)
+
+    direction, condition_code = _parse_direction(entry_logic)
+    if not condition_code:
+        m.update_task(db_path, task_id, status="error",
+                      error="Empty entry condition.",
+                      message="Please provide a valid entry condition.")
+        return
+
+    pairs = m.list_pairs(db_path, session_id)
+    active = [p for p in pairs if not p["excluded"] and p["candle_count"] > 0]
+    primary_tf = timeframes[0] if timeframes else "1h"
+
+    if not active:
+        m.update_task(db_path, task_id, status="error",
+                      error="No active pairs with data.",
+                      message="Download data and add indicators first.")
+        return
+
+    progress(0, len(active), f"Evaluating entry logic on {len(active)} pairs…")
+
+    base_strategy = BaseStrategy()
+    all_entries: list[dict] = []
+    pairs_processed = 0
+
+    for pair in active:
+        path = parquet_path(parquet_dir, session_id, pair["symbol"], primary_tf)
+        if not path.exists():
+            continue
+        try:
+            df = pd.read_parquet(path)
+        except Exception as e:
+            logger.warning("Cannot read %s: %s", path, e)
+            continue
+
+        if len(df) < 100:
+            continue
+
+        # Ensure indicators are present; if not, compute them
+        if "RSI_14" not in df.columns:
+            df = base_strategy.populate_indicators(df)
+
+        if "entry_signal" not in df.columns:
+            # Evaluate the user's condition directly
+            entry_mask = _eval_entry_condition(df, condition_code)
+        else:
+            # Re-evaluate user condition on top of existing data
+            entry_mask = _eval_entry_condition(df, condition_code)
+
+        entries = _simulate_entries(df, entry_mask, hold_bars, min_profit_pct)
+        all_entries.extend(entries)
+        pairs_processed += 1
+        progress(pairs_processed, len(active),
+                 f"Processed {pairs_processed}/{len(active)} pairs — {len(all_entries)} entries found")
+
+    if len(all_entries) < 10:
+        m.update_task(db_path, task_id, status="error",
+                      error=f"Only {len(all_entries)} entries found — need at least 10.",
+                      message="Entry condition may be too restrictive, or data not enriched yet.")
+        return
+
+    winners = [e for e in all_entries if e["is_winner"]]
+    losers = [e for e in all_entries if not e["is_winner"]]
+
+    progress(len(active), len(active),
+             f"Comparing {len(winners)} winners vs {len(losers)} losers…")
+
+    if len(winners) < 5 or len(losers) < 5:
+        m.update_task(db_path, task_id, status="error",
+                      error=f"Need ≥5 winners and ≥5 losers. Got {len(winners)} / {len(losers)}.",
+                      message="Try a longer hold period or lower min_profit threshold.")
+        return
+
+    # Build DataFrames for winners/losers indicator snapshots
+    w_snaps = pd.DataFrame([e["snapshot"] for e in winners])
+    l_snaps = pd.DataFrame([e["snapshot"] for e in losers])
+
+    # Compute Cohen's D for each available indicator
+    discrimination = []
+    for col in ANALYSIS_INDICATORS:
+        if col not in w_snaps.columns or col not in l_snaps.columns:
+            continue
+        w_vals = w_snaps[col].dropna().values
+        l_vals = l_snaps[col].dropna().values
+        if len(w_vals) < 5 or len(l_vals) < 5:
+            continue
+        d = _cohens_d(w_vals, l_vals)
+        if abs(d) < 0.1:
+            continue
+        suggestion = _suggest_filter(col, w_vals, l_vals, d)
+        if suggestion:
+            discrimination.append(suggestion)
+
+    discrimination.sort(key=lambda x: x["abs_d"], reverse=True)
+    top_indicators = discrimination[:15]
+
+    # Overall stats
+    win_rate = len(winners) / len(all_entries) if all_entries else 0
+    avg_winner_pnl = float(np.mean([e["pnl_pct"] for e in winners])) if winners else 0
+    avg_loser_pnl = float(np.mean([e["pnl_pct"] for e in losers])) if losers else 0
+
+    result = {
+        "total_entries": len(all_entries),
+        "winners": len(winners),
+        "losers": len(losers),
+        "win_rate": round(win_rate, 4),
+        "avg_winner_pnl": round(avg_winner_pnl, 4),
+        "avg_loser_pnl": round(avg_loser_pnl, 4),
+        "hold_bars": hold_bars,
+        "min_profit_pct": min_profit_pct,
+        "direction": direction,
+        "entry_condition": condition_code,
+        "top_indicators": top_indicators,
+        "pairs_processed": pairs_processed,
+    }
+
+    m.update_task(db_path, task_id,
+                  status="done",
+                  progress=len(active),
+                  total=len(active),
+                  message=f"Done — {len(winners)}/{len(all_entries)} winners, {len(top_indicators)} discriminative indicators found.",
+                  result=result)
