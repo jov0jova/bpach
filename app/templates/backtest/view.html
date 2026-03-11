@@ -18,6 +18,28 @@
           <div class="small text-muted">Optuna OOS validation enabled</div>
         </div>
         <form method="post" action="{{ url_for('backtest.run', session_id=session.id) }}">
+          <div class="row g-2 mb-3">
+            <div class="col-12">
+              <label class="form-label small text-muted">Stop Loss (%)</label>
+              <input type="number" name="stop_loss_pct" class="form-control caf-input form-control-sm"
+                     value="0" min="0" max="50" step="0.5"
+                     placeholder="0 = disabled">
+              <small class="text-muted">e.g. 2 = exit if trade drops 2%</small>
+            </div>
+            <div class="col-12">
+              <label class="form-label small text-muted">Take Profit (%)</label>
+              <input type="number" name="take_profit_pct" class="form-control caf-input form-control-sm"
+                     value="0" min="0" max="200" step="0.5"
+                     placeholder="0 = disabled">
+            </div>
+            <div class="col-12">
+              <label class="form-label small text-muted">Trailing Stop (%)</label>
+              <input type="number" name="trailing_stop_pct" class="form-control caf-input form-control-sm"
+                     value="0" min="0" max="50" step="0.5"
+                     placeholder="0 = disabled">
+              <small class="text-muted">e.g. 3 = exit if 3% below peak</small>
+            </div>
+          </div>
           <button type="submit" class="btn btn-info w-100 text-dark fw-bold"
                   {% if task and task.status == 'running' %}disabled{% endif %}>
             <i class="bi bi-play-fill me-1"></i>

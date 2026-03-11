@@ -6,6 +6,7 @@ ta==0.11.0
 ccxt==4.5.42
 optuna==4.0.0
 scikit-learn==1.5.2
+scipy>=1.11.0
 plotly==5.24.1
 pyarrow==18.0.0
 python-dotenv==1.0.1

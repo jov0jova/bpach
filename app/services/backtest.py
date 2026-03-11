@@ -34,15 +34,23 @@ def _load_enriched_df(parquet_dir, session_id, symbol, timeframe) -> Optional[pd
 
 def _simple_backtest(df: pd.DataFrame, initial_capital: float,
                      fee_rate: float, slippage: float,
-                     position_size: float) -> dict:
+                     position_size: float,
+                     stop_loss_pct: float = 0.0,
+                     take_profit_pct: float = 0.0,
+                     trailing_stop_pct: float = 0.0) -> dict:
     """
-    Fallback pure-Python backtest when vectorbt is unavailable.
+    Pure-Python backtest with optional stop-loss, take-profit, and trailing stop.
+
+    stop_loss_pct:    e.g. 0.02 = exit if trade drops 2% from entry
+    take_profit_pct:  e.g. 0.06 = exit if trade gains 6% from entry
+    trailing_stop_pct: e.g. 0.03 = exit if price drops 3% from peak price seen since entry
     """
     capital = initial_capital
     equity = [capital]
     in_trade = False
     entry_price = 0.0
     entry_idx = 0
+    peak_price = 0.0
     trades = []
 
     entry_sig = df["entry_signal"].fillna(0).values
@@ -55,27 +63,50 @@ def _simple_backtest(df: pd.DataFrame, initial_capital: float,
         if not in_trade and entry_sig[i - 1] == 1:
             in_trade = True
             entry_price = close[i] * (1 + slippage)
+            peak_price = entry_price
             entry_idx = i
             capital -= capital * position_size * fee_rate
 
-        elif in_trade and (exit_sig[i - 1] == 1 or i == len(df) - 1):
-            exit_price = close[i] * (1 - slippage)
-            trade_return = (exit_price / entry_price - 1) * position_size
-            capital *= (1 + trade_return)
-            capital -= capital * position_size * fee_rate
-            pnl_pct = (exit_price / entry_price - 1) * 100
-            trades.append({
-                "entry_idx": entry_idx,
-                "exit_idx": i,
-                "entry_price": entry_price,
-                "exit_price": exit_price,
-                "pnl_pct": pnl_pct,
-                "is_winner": pnl_pct > 0,
-                "entry_time": str(ts[entry_idx]),
-                "exit_time": str(ts[i]),
-                "duration_bars": i - entry_idx,
-            })
-            in_trade = False
+        elif in_trade:
+            current_price = close[i]
+            peak_price = max(peak_price, current_price)
+
+            # Determine if an exit condition is triggered
+            pnl_from_entry = (current_price / entry_price) - 1
+            pnl_from_peak  = (current_price / peak_price)  - 1 if peak_price > 0 else 0
+
+            exit_reason = "signal"
+            should_exit = (exit_sig[i - 1] == 1 or i == len(df) - 1)
+
+            if stop_loss_pct > 0 and pnl_from_entry <= -stop_loss_pct:
+                should_exit = True
+                exit_reason = "stop_loss"
+            elif take_profit_pct > 0 and pnl_from_entry >= take_profit_pct:
+                should_exit = True
+                exit_reason = "take_profit"
+            elif trailing_stop_pct > 0 and pnl_from_peak <= -trailing_stop_pct:
+                should_exit = True
+                exit_reason = "trailing_stop"
+
+            if should_exit:
+                exit_price = current_price * (1 - slippage)
+                trade_return = (exit_price / entry_price - 1) * position_size
+                capital *= (1 + trade_return)
+                capital -= capital * position_size * fee_rate
+                pnl_pct = (exit_price / entry_price - 1) * 100
+                trades.append({
+                    "entry_idx": entry_idx,
+                    "exit_idx": i,
+                    "entry_price": entry_price,
+                    "exit_price": exit_price,
+                    "pnl_pct": pnl_pct,
+                    "is_winner": pnl_pct > 0,
+                    "entry_time": str(ts[entry_idx]),
+                    "exit_time": str(ts[i]),
+                    "duration_bars": i - entry_idx,
+                    "exit_reason": exit_reason,
+                })
+                in_trade = False
 
         equity.append(capital)
 
@@ -121,7 +152,10 @@ def _simple_backtest(df: pd.DataFrame, initial_capital: float,
 def _walk_forward_backtest(df: pd.DataFrame, strategy: BaseStrategy,
                            n_splits: int, train_ratio: float,
                            initial_capital: float, fee_rate: float,
-                           slippage: float, position_size: float) -> dict:
+                           slippage: float, position_size: float,
+                           stop_loss_pct: float = 0.0,
+                           take_profit_pct: float = 0.0,
+                           trailing_stop_pct: float = 0.0) -> dict:
     """
     Walk-forward optimization: split data into n_splits folds,
     optimize on train window, validate on test window.
@@ -145,12 +179,14 @@ def _walk_forward_backtest(df: pd.DataFrame, strategy: BaseStrategy,
 
         # Run on training
         train_enriched = strategy.run(train_df)
-        is_r = _simple_backtest(train_enriched, initial_capital, fee_rate, slippage, position_size)
+        is_r = _simple_backtest(train_enriched, initial_capital, fee_rate, slippage, position_size,
+                                stop_loss_pct, take_profit_pct, trailing_stop_pct)
         is_results.append(is_r)
 
         # Run on OOS
         test_enriched = strategy.run(test_df)
-        oos_r = _simple_backtest(test_enriched, initial_capital, fee_rate, slippage, position_size)
+        oos_r = _simple_backtest(test_enriched, initial_capital, fee_rate, slippage, position_size,
+                                 stop_loss_pct, take_profit_pct, trailing_stop_pct)
         oos_results.append(oos_r)
 
     def avg(results, key):
@@ -182,12 +218,15 @@ def run_backtest(task_id: str, db_path: Path, session_id: str,
     def progress(p, total, msg):
         m.update_task(db_path, task_id, progress=p, total=total, message=msg)
 
-    initial_capital = config.get("initial_capital", 10_000)
-    fee_rate = config.get("fee_rate", 0.001)
-    slippage = config.get("slippage", 0.0005)
-    position_size = config.get("position_size", 0.1)
-    n_splits = config.get("wfo_splits", 5)
-    train_ratio = config.get("wfo_train_ratio", 0.7)
+    initial_capital   = config.get("initial_capital", 10_000)
+    fee_rate          = config.get("fee_rate", 0.001)
+    slippage          = config.get("slippage", 0.0005)
+    position_size     = config.get("position_size", 0.1)
+    stop_loss_pct     = config.get("stop_loss_pct", 0.0)
+    take_profit_pct   = config.get("take_profit_pct", 0.0)
+    trailing_stop_pct = config.get("trailing_stop_pct", 0.0)
+    n_splits          = config.get("wfo_splits", 5)
+    train_ratio       = config.get("wfo_train_ratio", 0.7)
     primary_tf = timeframes[0] if timeframes else "1h"
 
     pairs = m.list_pairs(db_path, session_id)
@@ -233,7 +272,8 @@ def run_backtest(task_id: str, db_path: Path, session_id: str,
         all_wfo.append(wfo)
 
         # Full-period backtest for trade records
-        full_result = _simple_backtest(df, initial_capital, fee_rate, slippage, position_size)
+        full_result = _simple_backtest(df, initial_capital, fee_rate, slippage, position_size,
+                                       stop_loss_pct, take_profit_pct, trailing_stop_pct)
 
         for t in full_result.get("trades_list", []):
             all_trades.append({

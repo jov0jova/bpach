@@ -1,0 +1,314 @@
+{% extends "base.html" %}
+{% block title %}IC Analysis – {{ session.name }}{% endblock %}
+
+{% block content %}
+<div class="mt-3 mb-4 d-flex align-items-center justify-content-between">
+  <div>
+    <h2 class="mb-0"><i class="bi bi-graph-up me-2 text-success"></i>Information Coefficient Analysis</h2>
+    <small class="text-muted">Rank correlation between each indicator and forward returns. This tells you which indicators actually <em>predict</em> price movement.</small>
+  </div>
+  <div>
+    <form method="post" action="{{ url_for('ic_analysis.run', session_id=session.id) }}" class="d-inline">
+      <button class="btn btn-success"
+              {% if task and task.status == 'running' %}disabled{% endif %}>
+        <i class="bi bi-play-fill me-1"></i>
+        {% if task and task.status == 'running' %}Running…{% else %}Run IC Analysis{% endif %}
+      </button>
+    </form>
+  </div>
+</div>
+
+<!-- IC explainer -->
+<div class="alert alert-dark border mb-4 small">
+  <div class="row g-3">
+    <div class="col-md-5">
+      <div class="fw-semibold text-light mb-1"><i class="bi bi-info-circle me-1 text-info"></i>What is IC?</div>
+      <p class="mb-0 text-muted">
+        IC = Spearman rank correlation between indicator value at bar N and the return N bars later.
+        It answers: <em>"does knowing this indicator's value tell me anything about where price will be in the future?"</em>
+      </p>
+    </div>
+    <div class="col-md-4">
+      <div class="fw-semibold text-light mb-1"><i class="bi bi-bar-chart me-1 text-warning"></i>IC Thresholds</div>
+      <div class="text-muted">
+        <span class="badge bg-secondary">|IC| &gt; 0.05</span> Weak signal<br>
+        <span class="badge bg-warning text-dark">|IC| &gt; 0.10</span> Moderate<br>
+        <span class="badge bg-success">|IC| &gt; 0.20</span> Strong (rare)<br>
+        <span class="badge bg-danger">|IC| &gt; 0.30</span> Very strong
+      </div>
+    </div>
+    <div class="col-md-3">
+      <div class="fw-semibold text-light mb-1"><i class="bi bi-shield me-1 text-primary"></i>ICIR</div>
+      <p class="mb-0 text-muted">
+        ICIR = mean(IC) / std(IC) — consistency of the signal over time.
+        ICIR &gt; 0.5 = reliable. ICIR &gt; 1.0 = strong.
+      </p>
+    </div>
+  </div>
+</div>
+
+<!-- Progress -->
+{% if task and task.status == 'running' %}
+<div class="card caf-card mb-4"
+     hx-get="{{ url_for('ic_analysis.status', session_id=session.id) }}"
+     hx-trigger="every 3s"
+     hx-swap="innerHTML">
+  {% include "partials/task_progress.html" %}
+</div>
+{% elif task %}
+<div class="mb-3">{% include "partials/task_progress.html" %}</div>
+{% endif %}
+
+{% if not result %}
+<div class="text-center py-5 text-muted">
+  <i class="bi bi-graph-up display-3"></i>
+  <p class="mt-3">Run IC Analysis to discover which indicators actually predict price movement.</p>
+  <p class="small">Make sure you've added indicators (Phase 5) first.</p>
+</div>
+{% else %}
+
+<!-- Summary -->
+<div class="row g-3 mb-4">
+  <div class="col-sm-3">
+    <div class="card caf-card text-center py-3">
+      <div class="h4 mb-0 text-info">{{ result.pairs_analyzed }}</div>
+      <small class="text-muted">Pairs Analyzed</small>
+    </div>
+  </div>
+  <div class="col-sm-3">
+    <div class="card caf-card text-center py-3">
+      <div class="h4 mb-0 text-info">{{ result.indicators_analyzed }}</div>
+      <small class="text-muted">Indicators Tested</small>
+    </div>
+  </div>
+  <div class="col-sm-3">
+    <div class="card caf-card text-center py-3">
+      <div class="h4 mb-0 text-success">
+        {% if result.top_overall %}{{ result.top_overall[0].col }}{% else %}—{% endif %}
+      </div>
+      <small class="text-muted">Top Predictor</small>
+    </div>
+  </div>
+  <div class="col-sm-3">
+    <div class="card caf-card text-center py-3">
+      <div class="h4 mb-0 text-warning">
+        {% if result.top_overall %}{{ '%.4f' | format(result.top_overall[0].best_ic | abs) }}{% else %}—{% endif %}
+      </div>
+      <small class="text-muted">Best |IC|</small>
+    </div>
+  </div>
+</div>
+
+<!-- Main table: Top 30 indicators by IC -->
+<div class="card caf-card mb-4">
+  <div class="card-header caf-card-header">
+    <i class="bi bi-trophy me-2 text-warning"></i>Top Indicators by Predictive Power (|IC|)
+  </div>
+  <div class="table-responsive" style="max-height:500px;overflow-y:auto">
+    <table class="table caf-table table-sm mb-0">
+      <thead class="sticky-top">
+        <tr>
+          <th>#</th>
+          <th>Indicator</th>
+          <th>Strength</th>
+          <th>Best |IC|</th>
+          <th>Best Horizon</th>
+          <th>Direction</th>
+          <th>ICIR</th>
+          <th>IC 1-bar</th>
+          <th>IC 5-bar</th>
+          <th>IC 10-bar</th>
+          <th>IC 20-bar</th>
+          <th>Best Regime</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in result.top_overall %}
+        <tr>
+          <td class="text-muted">{{ loop.index }}</td>
+          <td><code class="text-warning">{{ r.col }}</code></td>
+          <td>
+            {% if r.strength == 'strong' %}
+            <span class="badge bg-success">Strong</span>
+            {% elif r.strength == 'moderate' %}
+            <span class="badge bg-warning text-dark">Moderate</span>
+            {% elif r.strength == 'weak' %}
+            <span class="badge bg-secondary">Weak</span>
+            {% else %}
+            <span class="badge bg-dark border text-muted">Noise</span>
+            {% endif %}
+          </td>
+          <td>
+            <div class="d-flex align-items-center gap-2">
+              <div class="progress" style="width:60px;height:5px">
+                <div class="progress-bar bg-{{ 'success' if r.max_abs_ic >= 0.1 else 'warning' if r.max_abs_ic >= 0.05 else 'secondary' }}"
+                     style="width:{{ [r.max_abs_ic * 500, 100] | min }}%"></div>
+              </div>
+              <span class="fw-semibold {{ 'text-success' if r.max_abs_ic >= 0.1 else 'text-warning' if r.max_abs_ic >= 0.05 else 'text-muted' }}">
+                {{ '%.4f' | format(r.max_abs_ic) }}
+              </span>
+            </div>
+          </td>
+          <td>{{ r.best_period }}-bar</td>
+          <td>
+            <span class="badge {{ 'bg-success' if r.direction == 'bullish' else 'bg-danger' }}">
+              {{ r.direction | upper }}
+            </span>
+          </td>
+          <td class="{{ 'text-success' if r.icir and r.icir > 0.5 else 'text-muted' }}">
+            {{ '%.2f' | format(r.icir) if r.icir is not none else '—' }}
+          </td>
+          <td class="{{ 'text-success' if r.ic_1 and r.ic_1 | abs > 0.05 else 'text-muted' }}">
+            {{ '%.3f' | format(r.ic_1) if r.ic_1 is not none else '—' }}
+          </td>
+          <td class="{{ 'text-success' if r.ic_5 and r.ic_5 | abs > 0.05 else 'text-muted' }}">
+            {{ '%.3f' | format(r.ic_5) if r.ic_5 is not none else '—' }}
+          </td>
+          <td class="{{ 'text-success' if r.ic_10 and r.ic_10 | abs > 0.05 else 'text-muted' }}">
+            {{ '%.3f' | format(r.ic_10) if r.ic_10 is not none else '—' }}
+          </td>
+          <td class="{{ 'text-success' if r.ic_20 and r.ic_20 | abs > 0.05 else 'text-muted' }}">
+            {{ '%.3f' | format(r.ic_20) if r.ic_20 is not none else '—' }}
+          </td>
+          <td>
+            {% if r.best_regime %}
+            <span class="badge bg-dark border small">{{ r.best_regime }}</span>
+            {% else %}—{% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- Category breakdown -->
+<div class="row g-4 mb-4">
+  {% set categories = [
+    ('top_trend',      'bi-trending-up',      'text-primary',  'Trend Indicators'),
+    ('top_momentum',   'bi-speedometer',      'text-warning',  'Momentum'),
+    ('top_volume',     'bi-bar-chart-fill',   'text-info',     'Volume'),
+    ('top_volatility', 'bi-activity',         'text-danger',   'Volatility'),
+    ('top_patterns',   'bi-grid-3x3-gap',     'text-success',  'Candlestick Patterns'),
+  ] %}
+  {% for key, icon, color, label in categories %}
+  {% if result[key] %}
+  <div class="col-md-6 col-xl-4">
+    <div class="card caf-card h-100">
+      <div class="card-header caf-card-header">
+        <i class="bi {{ icon }} me-2 {{ color }}"></i>{{ label }}
+      </div>
+      <div class="card-body p-0">
+        <table class="table table-sm caf-table mb-0">
+          <thead><tr><th>Indicator</th><th>|IC|</th><th>Dir</th><th>Horizon</th></tr></thead>
+          <tbody>
+            {% for r in result[key] %}
+            <tr>
+              <td><code class="text-warning small">{{ r.col }}</code></td>
+              <td class="{{ 'text-success' if r.max_abs_ic >= 0.1 else 'text-warning' if r.max_abs_ic >= 0.05 else 'text-muted' }}">
+                {{ '%.4f' | format(r.max_abs_ic) }}
+              </td>
+              <td><span class="badge {{ 'bg-success' if r.direction == 'bullish' else 'bg-danger' }} small">
+                {{ '↑' if r.direction == 'bullish' else '↓' }}
+              </span></td>
+              <td class="text-muted small">{{ r.best_period }}b</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+  {% endif %}
+  {% endfor %}
+</div>
+
+<!-- Regime analysis -->
+{% if result.top_trending_regime or result.top_ranging_regime %}
+<div class="row g-4 mb-4">
+  <div class="col-md-6">
+    <div class="card caf-card">
+      <div class="card-header caf-card-header">
+        <i class="bi bi-arrow-up-right me-2 text-success"></i>Best in Trending Markets
+      </div>
+      <div class="card-body p-0">
+        <table class="table table-sm caf-table mb-0">
+          <thead><tr><th>Indicator</th><th>IC (trending)</th><th>IC (overall)</th></tr></thead>
+          <tbody>
+            {% for r in result.top_trending_regime %}
+            <tr>
+              <td><code class="text-warning small">{{ r.col }}</code></td>
+              <td class="text-success">{{ '%.4f' | format(r.regime_ic.trending_up | default(0) | abs) }}</td>
+              <td class="text-muted">{{ '%.4f' | format(r.max_abs_ic) }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+  <div class="col-md-6">
+    <div class="card caf-card">
+      <div class="card-header caf-card-header">
+        <i class="bi bi-arrow-left-right me-2 text-info"></i>Best in Ranging Markets
+      </div>
+      <div class="card-body p-0">
+        <table class="table table-sm caf-table mb-0">
+          <thead><tr><th>Indicator</th><th>IC (ranging)</th><th>IC (overall)</th></tr></thead>
+          <tbody>
+            {% for r in result.top_ranging_regime %}
+            <tr>
+              <td><code class="text-warning small">{{ r.col }}</code></td>
+              <td class="text-success">{{ '%.4f' | format(r.regime_ic.ranging | default(0) | abs) }}</td>
+              <td class="text-muted">{{ '%.4f' | format(r.max_abs_ic) }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+{% endif %}
+
+<!-- Use results CTA -->
+<div class="card caf-card border-success border-opacity-50">
+  <div class="card-body">
+    <div class="fw-semibold text-success mb-2">
+      <i class="bi bi-lightbulb-fill me-2"></i>How to Use These Results
+    </div>
+    <div class="row g-3 text-muted small">
+      <div class="col-md-4">
+        <strong class="text-light">Path A (Entry Logic)</strong><br>
+        Use the top indicators from the IC analysis as candidates for your entry conditions.
+        They have <em>proven predictive power</em> — start with |IC| > 0.05 indicators from
+        the category that matches your trading style.
+      </div>
+      <div class="col-md-4">
+        <strong class="text-light">Regime-aware entries</strong><br>
+        Combine trending and ranging regime indicators: use trending-regime indicators
+        when EMA50_slope is high, switch to ranging-regime indicators when it's low.
+        This is the foundation of adaptive strategies.
+      </div>
+      <div class="col-md-4">
+        <strong class="text-light">Multi-horizon signals</strong><br>
+        If an indicator has high IC at 1-bar horizon → good for short trades.
+        High IC at 20-bar → better for swing trades.
+        Look for indicators that maintain IC across multiple horizons (most robust).
+      </div>
+    </div>
+    <div class="mt-3 d-flex gap-2">
+      <a href="{{ url_for('entry_logic.entry_logic_view', session_id=session.id) }}"
+         class="btn btn-outline-warning btn-sm">
+        <i class="bi bi-funnel me-1"></i>Use in Entry Logic →
+      </a>
+      <a href="{{ url_for('algofinder.algofinder_view', session_id=session.id) }}"
+         class="btn btn-outline-danger btn-sm">
+        <i class="bi bi-search-heart me-1"></i>Go to Algo Finder →
+      </a>
+    </div>
+  </div>
+</div>
+
+{% endif %}
+{% endblock %}

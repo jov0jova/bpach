@@ -52,6 +52,11 @@
       <i class="bi bi-graph-up-arrow me-2"></i>
       <span class="phase-num">5</span> Add Indicators
     </a>
+    <a class="nav-link caf-nav-link {% if request.endpoint and 'ic_analysis' in request.endpoint %}active{% endif %}"
+       href="{{ url_for('ic_analysis.ic_view', session_id=session.id) }}">
+      <i class="bi bi-graph-up me-2"></i>
+      <span class="phase-num">5b</span> IC Analysis
+    </a>
     <a class="nav-link caf-nav-link {% if request.endpoint and 'backtest' in request.endpoint %}active{% endif %}"
        href="{{ url_for('backtest.backtest_view', session_id=session.id) }}">
       <i class="bi bi-play-circle-fill me-2"></i>

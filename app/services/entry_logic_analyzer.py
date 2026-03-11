@@ -158,6 +158,66 @@ def _suggest_filter(col: str, winner_vals: np.ndarray, loser_vals: np.ndarray,
     }
 
 
+def _ml_feature_importance(winners: list[dict], losers: list[dict],
+                            top_n: int = 15) -> list[dict]:
+    """
+    Random Forest feature importance for winner/loser classification.
+    Captures nonlinear relationships and interaction effects that Cohen's D misses.
+    Returns list of {col, rf_importance, rank} sorted by importance descending.
+    """
+    try:
+        from sklearn.ensemble import RandomForestClassifier
+        from sklearn.preprocessing import StandardScaler
+        import warnings
+        warnings.filterwarnings("ignore")
+    except ImportError:
+        logger.warning("scikit-learn not available for RF feature importance.")
+        return []
+
+    # Build feature matrix
+    all_samples = winners + losers
+    labels = [1] * len(winners) + [0] * len(losers)
+
+    snaps = [e["snapshot"] for e in all_samples]
+    if not snaps:
+        return []
+
+    df = pd.DataFrame(snaps).fillna(0)
+    if df.shape[1] < 2 or df.shape[0] < 20:
+        return []
+
+    # Keep only columns that exist in most rows
+    df = df.dropna(axis=1, thresh=int(len(df) * 0.6))
+    cols = df.columns.tolist()
+
+    X = df.values
+    y = np.array(labels)
+
+    try:
+        rf = RandomForestClassifier(
+            n_estimators=100,
+            max_depth=5,
+            min_samples_leaf=3,
+            random_state=42,
+            n_jobs=-1,
+        )
+        rf.fit(X, y)
+
+        importances = rf.feature_importances_
+        result = sorted(
+            [{"col": col, "rf_importance": round(float(imp), 5)}
+             for col, imp in zip(cols, importances)
+             if imp > 0.001],
+            key=lambda x: x["rf_importance"], reverse=True
+        )
+        for i, r in enumerate(result[:top_n]):
+            r["rank"] = i + 1
+        return result[:top_n]
+    except Exception as e:
+        logger.warning("RF feature importance failed: %s", e)
+        return []
+
+
 def run_entry_analysis(task_id: str, db_path: Path, session_id: str,
                        parquet_dir: Path, timeframes: list,
                        entry_logic: str, hold_bars: int = 10,
@@ -263,6 +323,23 @@ def run_entry_analysis(task_id: str, db_path: Path, session_id: str,
     discrimination.sort(key=lambda x: x["abs_d"], reverse=True)
     top_indicators = discrimination[:15]
 
+    # ML Feature Importance
+    rf_importance = _ml_feature_importance(winners, losers)
+
+    # Merge RF rank into top_indicators
+    rf_map = {r["col"]: r["rf_importance"] for r in rf_importance}
+    for ind in top_indicators:
+        ind["rf_importance"] = round(rf_map.get(ind["col"], 0.0), 5)
+
+    # Combined score: average of normalized Cohen's D and RF importance
+    max_d  = max((i["abs_d"] for i in top_indicators), default=1.0) or 1.0
+    max_rf = max((i["rf_importance"] for i in top_indicators), default=1.0) or 1.0
+    for ind in top_indicators:
+        norm_d  = ind["abs_d"] / max_d
+        norm_rf = ind["rf_importance"] / max_rf
+        ind["combined_score"] = round((norm_d + norm_rf) / 2, 4)
+    top_indicators.sort(key=lambda x: x["combined_score"], reverse=True)
+
     # Overall stats
     win_rate = len(winners) / len(all_entries) if all_entries else 0
     avg_winner_pnl = float(np.mean([e["pnl_pct"] for e in winners])) if winners else 0
@@ -280,6 +357,7 @@ def run_entry_analysis(task_id: str, db_path: Path, session_id: str,
         "direction": direction,
         "entry_condition": condition_code,
         "top_indicators": top_indicators,
+        "rf_importance": rf_importance,
         "pairs_processed": pairs_processed,
     }
 

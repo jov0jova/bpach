@@ -43,6 +43,9 @@ def run(session_id):
         "position_size": params.get("position_size", current_app.config["DEFAULT_POSITION_SIZE"]),
         "wfo_splits": current_app.config["WFO_SPLITS"],
         "wfo_train_ratio": current_app.config["WFO_TRAIN_RATIO"],
+        "stop_loss_pct":     float(request.form.get("stop_loss_pct", 0)) / 100,
+        "take_profit_pct":   float(request.form.get("take_profit_pct", 0)) / 100,
+        "trailing_stop_pct": float(request.form.get("trailing_stop_pct", 0)) / 100,
     }
 
     run_id = db.create_backtest_run(session_id, strategy_code, params)
