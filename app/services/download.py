@@ -3,8 +3,10 @@ Phase 2: Data download service.
 Downloads OHLCV data from exchange via CCXT and stores as Parquet files.
 """
 import logging
+import os
+import threading
 import time
-from datetime import datetime, timezone
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import ccxt
@@ -22,6 +24,10 @@ TIMEFRAME_MS = {
     "6h": 21_600_000, "8h": 28_800_000, "12h": 43_200_000,
     "1d": 86_400_000, "3d": 259_200_000, "1w": 604_800_000,
 }
+
+# Parallel workers for download — each worker gets its own exchange connection.
+# Capped at 6 to stay within typical exchange rate limits.
+_DOWNLOAD_WORKERS = min(6, os.cpu_count() or 4)
 
 
 def _get_exchange(exchange_id: str):
@@ -60,16 +66,14 @@ def run_download(task_id: str, db_path: Path, session_id: str,
                  lookback_days: int = 365) -> None:
     """
     Background task: download OHLCV data for all pairs in the session.
-    Progress is written to the tasks table.
+    Pairs are downloaded in parallel; each worker has its own exchange connection.
     """
-    def progress(p, total, msg):
-        m.update_task(db_path, task_id, progress=p, total=total, message=msg)
-
-    progress(0, 1, "Connecting to exchange…")
+    m.update_task(db_path, task_id, progress=0, total=1, message="Connecting to exchange…")
 
     try:
-        ex = _get_exchange(exchange_id)
-        ex.load_markets()
+        # Load markets once to validate connectivity
+        ex_check = _get_exchange(exchange_id)
+        ex_check.load_markets()
     except Exception as e:
         m.update_task(db_path, task_id, status="error", error=str(e),
                       message=f"Failed to connect to {exchange_id}: {e}")
@@ -80,7 +84,6 @@ def run_download(task_id: str, db_path: Path, session_id: str,
     active_pairs = [p for p in pairs_db if p["active"] and not p["excluded"]][:max_pairs]
 
     if not active_pairs:
-        # Fetch from exchange if not yet populated
         try:
             raw_pairs = fetch_active_pairs(exchange_id, quote_asset)[:max_pairs]
             m.upsert_pairs(db_path, session_id, raw_pairs)
@@ -90,22 +93,48 @@ def run_download(task_id: str, db_path: Path, session_id: str,
             return
 
     total_steps = len(active_pairs) * len(timeframes)
-    step = 0
     since_ms = int((time.time() - lookback_days * 86400) * 1000)
 
-    for pair in active_pairs:
+    completed = 0
+    lock = threading.Lock()
+
+    # Thread-local exchange connections (one per thread)
+    tl = threading.local()
+
+    def _get_thread_exchange():
+        if not hasattr(tl, "ex"):
+            tl.ex = _get_exchange(exchange_id)
+            tl.ex.load_markets()
+        return tl.ex
+
+    def download_pair(pair: dict) -> tuple[str, list[str]]:
+        """Download all timeframes for one pair. Returns (symbol, errors)."""
         symbol = pair["symbol"]
+        errors = []
+        ex = _get_thread_exchange()
         for tf in timeframes:
-            step += 1
-            progress(step, total_steps, f"Downloading {symbol} {tf}…")
             try:
-                _download_pair(ex, db_path, parquet_dir, session_id,
-                               symbol, tf, since_ms)
+                _download_pair(ex, db_path, parquet_dir, session_id, symbol, tf, since_ms)
             except Exception as e:
                 logger.warning("Failed to download %s %s: %s", symbol, tf, e)
-                continue
+                errors.append(f"{tf}: {e}")
+            with lock:
+                nonlocal completed
+                completed += 1
+                m.update_task(db_path, task_id, progress=completed, total=total_steps,
+                              message=f"Downloaded {symbol} {tf} ({completed}/{total_steps})…")
+        return symbol, errors
 
-    progress(total_steps, total_steps, f"Downloaded {len(active_pairs)} pairs × {len(timeframes)} timeframes.")
+    workers = min(_DOWNLOAD_WORKERS, len(active_pairs))
+    with ThreadPoolExecutor(max_workers=workers) as exe:
+        futures = {exe.submit(download_pair, pair): pair["symbol"] for pair in active_pairs}
+        for fut in as_completed(futures):
+            symbol, errors = fut.result()
+            if errors:
+                logger.warning("Download errors for %s: %s", symbol, errors)
+
+    m.update_task(db_path, task_id, progress=total_steps, total=total_steps,
+                  message=f"Downloaded {len(active_pairs)} pairs × {len(timeframes)} timeframes.")
     m.update_session_status(db_path, session_id, "data_ready")
 
 

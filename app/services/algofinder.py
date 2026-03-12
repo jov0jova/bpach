@@ -9,8 +9,11 @@ Two modes:
           filter thresholds identified by the winner/loser analysis.
 """
 import logging
+import os
 import re
+import threading
 import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import numpy as np
@@ -208,33 +211,47 @@ def run_algofinder(task_id: str, db_path: Path, session_id: str,
     primary_tf = timeframes[0] if timeframes else "1h"
     higher_tfs = timeframes[1:] if len(timeframes) > 1 else []
 
-    # Load a sample of pairs (up to 20 for performance)
+    # Load a sample of pairs (up to 20 for performance) — parallel
     dfs = []
-    base_strategy = BaseStrategy()
-    htf_found = False
-    for pair in active[:20]:
-        path = parquet_path(parquet_dir, session_id, pair["symbol"], primary_tf)
+    htf_found_flag = [False]
+    load_lock = threading.Lock()
+
+    def _load_pair(pair: dict):
+        symbol = pair["symbol"]
+        path = parquet_path(parquet_dir, session_id, symbol, primary_tf)
         if not path.exists():
-            continue
+            return None
         df = pd.read_parquet(path)
         if len(df) < 100:
-            continue
-        # Pre-add indicators so each trial doesn't re-compute them
-        df = base_strategy.populate_indicators(df)
-
-        # Inject HTF features (pre-computed, so Optuna trials don't re-compute)
+            return None
+        strat = BaseStrategy()
+        df = strat.populate_indicators(df)
+        pair_htf_found = False
         for htf in higher_tfs:
-            htf_path = parquet_path(parquet_dir, session_id, pair["symbol"], htf)
+            htf_path = parquet_path(parquet_dir, session_id, symbol, htf)
             if not htf_path.exists():
                 continue
             try:
                 htf_df = pd.read_parquet(htf_path)
-                df = inject_htf_features(df, htf_df, htf, base_strategy)
-                htf_found = True
+                df = inject_htf_features(df, htf_df, htf, strat)
+                pair_htf_found = True
             except Exception as e:
-                logger.warning("AlgoFinder HTF inject %s %s: %s", pair["symbol"], htf, e)
+                logger.warning("AlgoFinder HTF inject %s %s: %s", symbol, htf, e)
+        if pair_htf_found:
+            with load_lock:
+                htf_found_flag[0] = True
+        return df
 
-        dfs.append(df)
+    sample_pairs = active[:20]
+    workers = min(os.cpu_count() or 4, len(sample_pairs))
+    with ThreadPoolExecutor(max_workers=workers) as exe:
+        futs = [exe.submit(_load_pair, pair) for pair in sample_pairs]
+        for fut in as_completed(futs):
+            result = fut.result()
+            if result is not None:
+                dfs.append(result)
+
+    htf_found = htf_found_flag[0]
 
     if not dfs:
         m.update_task(db_path, task_id, status="error",
@@ -249,16 +266,24 @@ def run_algofinder(task_id: str, db_path: Path, session_id: str,
                                 sampler=optuna.samplers.TPESampler(seed=42))
 
     trial_count = [0]
+    counter_lock = threading.Lock()
 
     def callback(study, trial):
-        trial_count[0] += 1
-        if trial_count[0] % 5 == 0:
-            progress(trial_count[0], n_trials,
-                     f"Trial {trial_count[0]}/{n_trials} — best: {study.best_value:.3f}")
+        with counter_lock:
+            trial_count[0] += 1
+            count = trial_count[0]
+        if count % 5 == 0:
+            try:
+                best = study.best_value
+            except Exception:
+                best = float("nan")
+            progress(count, n_trials, f"Trial {count}/{n_trials} — best: {best:.3f}")
 
+    n_jobs = min(os.cpu_count() or 1, 4)  # up to 4 parallel Optuna workers
     study.optimize(
         lambda trial: _objective(trial, dfs, config, has_htf=htf_found),
         n_trials=n_trials,
+        n_jobs=n_jobs,
         callbacks=[callback],
         show_progress_bar=False,
     )
@@ -273,10 +298,12 @@ def run_algofinder(task_id: str, db_path: Path, session_id: str,
         params = trial.params
         strategy = OptunaStrategy(params)
 
-        # Compute final metrics on all data
+        # Compute final metrics on all data (df already has indicators pre-computed)
         all_wfo = []
         for df in dfs:
-            enriched = strategy.run(df.copy())
+            enriched = df.copy()
+            enriched = strategy.populate_entry_signal(enriched)
+            enriched = strategy.populate_exit_signal(enriched)
             wfo = _walk_forward_backtest(
                 enriched, strategy,
                 n_splits=config.get("wfo_splits", 3),
@@ -457,27 +484,37 @@ def run_algofinder_path_a(task_id: str, db_path: Path, session_id: str,
     higher_tfs = timeframes[1:] if len(timeframes) > 1 else []
 
     dfs = []
-    base_strategy = BaseStrategy()
-    for pair in active[:20]:
-        path = parquet_path(parquet_dir, session_id, pair["symbol"], primary_tf)
+
+    def _load_pair_a(pair: dict):
+        symbol = pair["symbol"]
+        path = parquet_path(parquet_dir, session_id, symbol, primary_tf)
         if not path.exists():
-            continue
+            return None
         df = pd.read_parquet(path)
         if len(df) < 100:
-            continue
+            return None
+        strat = BaseStrategy()
         if "RSI_14" not in df.columns:
-            df = base_strategy.populate_indicators(df)
-        # Inject HTF features for entry condition evaluation
+            df = strat.populate_indicators(df)
         for htf in higher_tfs:
-            htf_path = parquet_path(parquet_dir, session_id, pair["symbol"], htf)
+            htf_path = parquet_path(parquet_dir, session_id, symbol, htf)
             if not htf_path.exists():
                 continue
             try:
                 htf_df = pd.read_parquet(htf_path)
-                df = inject_htf_features(df, htf_df, htf, base_strategy)
+                df = inject_htf_features(df, htf_df, htf, strat)
             except Exception as e:
-                logger.warning("PathA HTF inject %s %s: %s", pair["symbol"], htf, e)
-        dfs.append(df)
+                logger.warning("PathA HTF inject %s %s: %s", symbol, htf, e)
+        return df
+
+    sample_pairs_a = active[:20]
+    workers_a = min(os.cpu_count() or 4, len(sample_pairs_a))
+    with ThreadPoolExecutor(max_workers=workers_a) as exe:
+        futs = [exe.submit(_load_pair_a, pair) for pair in sample_pairs_a]
+        for fut in as_completed(futs):
+            result = fut.result()
+            if result is not None:
+                dfs.append(result)
 
     if not dfs:
         m.update_task(db_path, task_id, status="error",
@@ -488,17 +525,26 @@ def run_algofinder_path_a(task_id: str, db_path: Path, session_id: str,
 
     study = optuna.create_study(direction="maximize",
                                 sampler=optuna.samplers.TPESampler(seed=42))
-    trial_count = [0]
+    trial_count_a = [0]
+    counter_lock_a = threading.Lock()
 
     def callback(study, trial):
-        trial_count[0] += 1
-        if trial_count[0] % 5 == 0:
-            progress(trial_count[0], n_trials,
-                     f"Trial {trial_count[0]}/{n_trials} — best: {study.best_value:.3f}")
+        with counter_lock_a:
+            trial_count_a[0] += 1
+            count = trial_count_a[0]
+        if count % 5 == 0:
+            try:
+                best = study.best_value
+            except Exception:
+                best = float("nan")
+            progress(count, n_trials,
+                     f"Trial {count}/{n_trials} — best: {best:.3f}")
 
+    n_jobs_a = min(os.cpu_count() or 1, 4)
     study.optimize(
         lambda trial: _path_a_objective(trial, dfs, config, condition_code, indicator_filters),
         n_trials=n_trials,
+        n_jobs=n_jobs_a,
         callbacks=[callback],
         show_progress_bar=False,
     )
