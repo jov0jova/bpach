@@ -42,16 +42,33 @@
       {% elif cat == 'Volatility' %}<i class="bi bi-activity me-2 text-danger"></i>
       {% elif cat == 'Structure' %}<i class="bi bi-grid me-2 text-secondary"></i>
       {% elif cat == 'Patterns' %}<i class="bi bi-grid-3x3-gap me-2 text-success"></i>
-      {% elif cat == 'Regime' %}<i class="bi bi-diagram-3 me-2 text-purple"></i>
+      {% elif cat == 'Regime' %}<i class="bi bi-diagram-3 me-2 text-primary"></i>
+      {% elif cat == 'Multi-TF' %}<i class="bi bi-layers me-2 text-info"></i>
       {% endif %}
       {{ cat }} Indicators
       <span class="badge bg-secondary ms-2">{{ by_category[cat]|length }}</span>
+      {% if cat == 'Multi-TF' %}
+      <span class="badge bg-info text-dark ms-2">Replace {tf} with e.g. 1h, 4h, 1d</span>
+      {% endif %}
     </div>
+    {% if cat == 'Multi-TF' %}
+    <div class="px-3 py-2 border-bottom" style="background:rgba(0,150,255,0.05)">
+      <small class="text-info">
+        <i class="bi bi-info-circle me-1"></i>
+        HTF columns are automatically injected when your session has multiple timeframes.
+        Replace <code>{tf}</code> with your actual higher timeframe:
+        {% for tf in example_tfs %}
+        <code class="text-warning ms-1">HTF_{{ tf }}_RSI_14</code>{% if not loop.last %},{% endif %}
+        {% endfor %}.
+        Use these in entry logic to require trend alignment across timeframes.
+      </small>
+    </div>
+    {% endif %}
     <div class="table-responsive">
       <table class="table table-sm caf-table mb-0">
         <thead>
           <tr>
-            <th style="width:200px">Column Name</th>
+            <th style="width:{% if cat == 'Multi-TF' %}240px{% else %}200px{% endif %}">Column Name</th>
             <th>Description</th>
           </tr>
         </thead>
@@ -59,7 +76,11 @@
           {% for ind in by_category[cat] %}
           <tr class="ind-row" data-name="{{ ind.col|lower }} {{ ind.desc|lower }}">
             <td>
+              {% if cat == 'Multi-TF' %}
+              <code class="text-info">{{ ind.col }}</code>
+              {% else %}
               <code class="text-warning">{{ ind.col }}</code>
+              {% endif %}
             </td>
             <td class="text-muted small">{{ ind.desc }}</td>
           </tr>

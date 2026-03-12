@@ -18,7 +18,7 @@ import optuna
 import pandas as pd
 
 from .. import models as m
-from ..strategies.base import BaseStrategy
+from ..strategies.base import BaseStrategy, inject_htf_features
 from ..services.backtest import _simple_backtest, _walk_forward_backtest
 from ..services.entry_logic_analyzer import _eval_entry_condition, _parse_direction
 from ..utils.parquet import parquet_path
@@ -38,6 +38,13 @@ SEARCH_SPACE = {
     "bb_pct_entry_max": (0.1, 0.4),
     "volume_ratio_min": (0.5, 2.5),
     "use_supertrend": (0, 1),         # 0 or 1
+    # ── Multi-Timeframe filters (applied when HTF data is present) ──
+    "use_htf_trend": (0, 1),          # require HTF price > HTF EMA50 (trend_dir == 1)
+    "use_htf_supertrend": (0, 1),     # require HTF Supertrend bullish
+    "htf_rsi_max": (30, 70),          # optional HTF RSI max threshold
+    "use_htf_rsi_filter": (0, 1),     # whether to apply htf_rsi_max filter
+    "htf_adx_min": (15, 40),          # optional HTF ADX minimum
+    "use_htf_adx_filter": (0, 1),     # whether to apply htf_adx_min filter
 }
 
 
@@ -57,6 +64,7 @@ class OptunaStrategy(BaseStrategy):
 
         cond = pd.Series(True, index=df.index)
 
+        # ── Primary TF filters ────────────────────────────────────────────────
         if rsi_col in df.columns:
             cond &= df[rsi_col] < p.get("rsi_entry_max", 40)
 
@@ -78,6 +86,25 @@ class OptunaStrategy(BaseStrategy):
         if p.get("use_supertrend", 0) and "SUPERT_dir" in df.columns:
             cond &= df["SUPERT_dir"] == 1
 
+        # ── Multi-Timeframe filters ───────────────────────────────────────────
+        # Find any HTF trend_dir column present (e.g. HTF_1h_trend_dir, HTF_4h_trend_dir)
+        htf_trend_cols = [c for c in df.columns if c.endswith("_trend_dir")]
+        if p.get("use_htf_trend", 0) and htf_trend_cols:
+            # Use the lowest available higher TF trend direction
+            cond &= df[htf_trend_cols[0]] == 1
+
+        htf_supert_cols = [c for c in df.columns if "HTF_" in c and c.endswith("_SUPERT_dir")]
+        if p.get("use_htf_supertrend", 0) and htf_supert_cols:
+            cond &= df[htf_supert_cols[0]] == 1
+
+        htf_rsi_cols = [c for c in df.columns if "HTF_" in c and c.endswith("_RSI_14")]
+        if p.get("use_htf_rsi_filter", 0) and htf_rsi_cols:
+            cond &= df[htf_rsi_cols[0]] < p.get("htf_rsi_max", 60)
+
+        htf_adx_cols = [c for c in df.columns if "HTF_" in c and c.endswith("_ADX_14")]
+        if p.get("use_htf_adx_filter", 0) and htf_adx_cols:
+            cond &= df[htf_adx_cols[0]] > p.get("htf_adx_min", 20)
+
         df["entry_signal"] = cond.astype(int)
         return df
 
@@ -97,7 +124,7 @@ class OptunaStrategy(BaseStrategy):
         return df
 
 
-def _objective(trial, dfs: list, config: dict) -> float:
+def _objective(trial, dfs: list, config: dict, has_htf: bool = False) -> float:
     """Optuna objective: returns OOS Sharpe ratio (maximize)."""
     params = {
         "rsi_period": trial.suggest_int("rsi_period", *SEARCH_SPACE["rsi_period"]),
@@ -111,6 +138,14 @@ def _objective(trial, dfs: list, config: dict) -> float:
         "volume_ratio_min": trial.suggest_float("volume_ratio_min", *SEARCH_SPACE["volume_ratio_min"]),
         "use_supertrend": trial.suggest_categorical("use_supertrend", [0, 1]),
     }
+    # HTF filters: only sampled if HTF data is present
+    if has_htf:
+        params["use_htf_trend"]      = trial.suggest_categorical("use_htf_trend", [0, 1])
+        params["use_htf_supertrend"] = trial.suggest_categorical("use_htf_supertrend", [0, 1])
+        params["use_htf_rsi_filter"] = trial.suggest_categorical("use_htf_rsi_filter", [0, 1])
+        params["htf_rsi_max"]        = trial.suggest_float("htf_rsi_max", *SEARCH_SPACE["htf_rsi_max"])
+        params["use_htf_adx_filter"] = trial.suggest_categorical("use_htf_adx_filter", [0, 1])
+        params["htf_adx_min"]        = trial.suggest_float("htf_adx_min", *SEARCH_SPACE["htf_adx_min"])
 
     # Ensure fast EMA < slow EMA
     if params["ema_fast"] >= params["ema_slow"]:
@@ -167,10 +202,12 @@ def run_algofinder(task_id: str, db_path: Path, session_id: str,
     pairs = m.list_pairs(db_path, session_id)
     active = [p for p in pairs if not p["excluded"] and p["candle_count"] > 0]
     primary_tf = timeframes[0] if timeframes else "1h"
+    higher_tfs = timeframes[1:] if len(timeframes) > 1 else []
 
     # Load a sample of pairs (up to 20 for performance)
     dfs = []
     base_strategy = BaseStrategy()
+    htf_found = False
     for pair in active[:20]:
         path = parquet_path(parquet_dir, session_id, pair["symbol"], primary_tf)
         if not path.exists():
@@ -180,6 +217,19 @@ def run_algofinder(task_id: str, db_path: Path, session_id: str,
             continue
         # Pre-add indicators so each trial doesn't re-compute them
         df = base_strategy.populate_indicators(df)
+
+        # Inject HTF features (pre-computed, so Optuna trials don't re-compute)
+        for htf in higher_tfs:
+            htf_path = parquet_path(parquet_dir, session_id, pair["symbol"], htf)
+            if not htf_path.exists():
+                continue
+            try:
+                htf_df = pd.read_parquet(htf_path)
+                df = inject_htf_features(df, htf_df, htf, base_strategy)
+                htf_found = True
+            except Exception as e:
+                logger.warning("AlgoFinder HTF inject %s %s: %s", pair["symbol"], htf, e)
+
         dfs.append(df)
 
     if not dfs:
@@ -188,7 +238,8 @@ def run_algofinder(task_id: str, db_path: Path, session_id: str,
                       message="Please download and enrich data first.")
         return
 
-    progress(0, n_trials, f"Running {n_trials} Optuna trials on {len(dfs)} pairs…")
+    tf_desc = f"{primary_tf}" + (f" + HTF: {', '.join(higher_tfs)}" if htf_found else " (no HTF data)")
+    progress(0, n_trials, f"Running {n_trials} trials on {len(dfs)} pairs [{tf_desc}]…")
 
     study = optuna.create_study(direction="maximize",
                                 sampler=optuna.samplers.TPESampler(seed=42))
@@ -202,7 +253,7 @@ def run_algofinder(task_id: str, db_path: Path, session_id: str,
                      f"Trial {trial_count[0]}/{n_trials} — best: {study.best_value:.3f}")
 
     study.optimize(
-        lambda trial: _objective(trial, dfs, config),
+        lambda trial: _objective(trial, dfs, config, has_htf=htf_found),
         n_trials=n_trials,
         callbacks=[callback],
         show_progress_bar=False,
@@ -399,6 +450,7 @@ def run_algofinder_path_a(task_id: str, db_path: Path, session_id: str,
     pairs = m.list_pairs(db_path, session_id)
     active = [p for p in pairs if not p["excluded"] and p["candle_count"] > 0]
     primary_tf = timeframes[0] if timeframes else "1h"
+    higher_tfs = timeframes[1:] if len(timeframes) > 1 else []
 
     dfs = []
     base_strategy = BaseStrategy()
@@ -411,6 +463,16 @@ def run_algofinder_path_a(task_id: str, db_path: Path, session_id: str,
             continue
         if "RSI_14" not in df.columns:
             df = base_strategy.populate_indicators(df)
+        # Inject HTF features for entry condition evaluation
+        for htf in higher_tfs:
+            htf_path = parquet_path(parquet_dir, session_id, pair["symbol"], htf)
+            if not htf_path.exists():
+                continue
+            try:
+                htf_df = pd.read_parquet(htf_path)
+                df = inject_htf_features(df, htf_df, htf, base_strategy)
+            except Exception as e:
+                logger.warning("PathA HTF inject %s %s: %s", pair["symbol"], htf, e)
         dfs.append(df)
 
     if not dfs:
@@ -525,6 +587,15 @@ def _describe_rules(params: dict) -> str:
         lines.append(f"  • Volume Ratio > {params.get('volume_ratio_min', 1):.1f}×")
     if params.get("use_supertrend"):
         lines.append("  • Supertrend direction = Bullish")
+    # HTF filters
+    if params.get("use_htf_trend"):
+        lines.append("  • [HTF] Price > HTF EMA50 (trend aligned)")
+    if params.get("use_htf_supertrend"):
+        lines.append("  • [HTF] Supertrend direction = Bullish on higher TF")
+    if params.get("use_htf_rsi_filter"):
+        lines.append(f"  • [HTF] RSI < {params.get('htf_rsi_max', 60):.1f} on higher TF")
+    if params.get("use_htf_adx_filter"):
+        lines.append(f"  • [HTF] ADX > {params.get('htf_adx_min', 20):.1f} on higher TF")
     lines.extend([
         f"",
         f"EXIT CONDITIONS:",

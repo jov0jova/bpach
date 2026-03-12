@@ -223,6 +223,77 @@
   {% endfor %}
 </div>
 
+<!-- HTF breakdown -->
+{% if result.htf_top %}
+<div class="card caf-card mb-4">
+  <div class="card-header caf-card-header">
+    <i class="bi bi-layers me-2 text-primary"></i>Higher Timeframe Predictors
+    <small class="text-muted ms-2">IC of HTF indicators vs {{ result.primary_tf }} returns — the multi-TF edge</small>
+  </div>
+  <div class="card-body p-0">
+    <ul class="nav nav-tabs px-3 pt-2" id="htfTabs">
+      {% for htf in result.higher_tfs %}
+      <li class="nav-item">
+        <a class="nav-link {% if loop.first %}active{% endif %}" data-bs-toggle="tab"
+           href="#htf-tab-{{ htf }}">{{ htf | upper }}</a>
+      </li>
+      {% endfor %}
+    </ul>
+    <div class="tab-content">
+      {% for htf in result.higher_tfs %}
+      <div class="tab-pane fade {% if loop.first %}show active{% endif %}" id="htf-tab-{{ htf }}">
+        {% set htf_rows = result.htf_top[htf] if htf in result.htf_top else [] %}
+        {% if htf_rows %}
+        <table class="table table-sm caf-table mb-0">
+          <thead>
+            <tr>
+              <th>HTF Indicator</th>
+              <th>Strength</th>
+              <th>Best |IC|</th>
+              <th>Horizon</th>
+              <th>Dir</th>
+              <th>ICIR</th>
+              <th>IC 5b</th>
+              <th>IC 10b</th>
+              <th>IC 20b</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for r in htf_rows %}
+            <tr>
+              <td><code class="text-primary small">{{ r.col | replace('HTF_' + htf + '_', '') }}</code>
+                <span class="text-muted" style="font-size:10px"> @{{ htf }}</span></td>
+              <td>
+                {% if r.strength == 'strong' %}<span class="badge bg-success">Strong</span>
+                {% elif r.strength == 'moderate' %}<span class="badge bg-warning text-dark">Moderate</span>
+                {% elif r.strength == 'weak' %}<span class="badge bg-secondary">Weak</span>
+                {% else %}<span class="badge bg-dark border text-muted">Noise</span>{% endif %}
+              </td>
+              <td class="{{ 'text-success fw-semibold' if r.max_abs_ic >= 0.1 else 'text-warning' if r.max_abs_ic >= 0.05 else 'text-muted' }}">
+                {{ '%.4f' | format(r.max_abs_ic) }}
+              </td>
+              <td class="text-muted small">{{ r.best_period }}-bar</td>
+              <td><span class="badge {{ 'bg-success' if r.direction == 'bullish' else 'bg-danger' }} small">
+                {{ '↑' if r.direction == 'bullish' else '↓' }}</span></td>
+              <td class="{{ 'text-success' if r.icir and r.icir > 0.5 else 'text-muted' }} small">
+                {{ '%.2f' | format(r.icir) if r.icir is not none else '—' }}</td>
+              <td class="text-muted small">{{ '%.3f' | format(r.ic_5) if r.ic_5 is not none else '—' }}</td>
+              <td class="text-muted small">{{ '%.3f' | format(r.ic_10) if r.ic_10 is not none else '—' }}</td>
+              <td class="text-muted small">{{ '%.3f' | format(r.ic_20) if r.ic_20 is not none else '—' }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        {% else %}
+        <p class="text-muted small p-3 mb-0">No {{ htf | upper }} data found. Make sure {{ htf }} is downloaded for this session.</p>
+        {% endif %}
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+</div>
+{% endif %}
+
 <!-- Regime analysis -->
 {% if result.top_trending_regime or result.top_ranging_regime %}
 <div class="row g-4 mb-4">

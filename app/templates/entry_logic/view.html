@@ -181,8 +181,17 @@
 </div>
 {% endif %}
 
+<!-- HTF usage example -->
+<div class="alert alert-info mt-4 mb-0 py-2 small">
+  <i class="bi bi-layers me-1"></i>
+  <strong>Multi-Timeframe columns:</strong> When your session has multiple timeframes (e.g. 15m, 1h, 4h),
+  HTF columns are automatically available with prefix <code>HTF_{tf}_</code>.
+  Example: <code class="text-warning">HTF_4h_RSI_14 &lt; 60 and HTF_4h_SUPERT_dir == 1 and RSI_14 &lt; 35</code>
+  — only enter long when the 4h RSI is not overbought, 4h supertrend is bullish, and 15m RSI is oversold.
+</div>
+
 <!-- Indicator reference -->
-<div class="card caf-card mt-4">
+<div class="card caf-card mt-2">
   <div class="card-header caf-card-header">
     <i class="bi bi-list-ul me-2"></i>Available Column Names
     <small class="text-muted ms-2">use in your boolean expressions above</small>

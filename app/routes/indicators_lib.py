@@ -119,9 +119,29 @@ INDICATOR_CATALOG = [
     {"name": "regime",            "category": "Regime",   "col": "regime",            "desc": "Market regime: trending_up / trending_down / ranging"},
     {"name": "vol_regime",        "category": "Regime",   "col": "vol_regime",        "desc": "Volatility regime: high_vol / low_vol"},
     {"name": "EMA50_slope",       "category": "Regime",   "col": "EMA50_slope",       "desc": "EMA50 slope (used for trending/ranging classification)"},
+    # ── Multi-Timeframe (injected at runtime based on session timeframes) ──────
+    {"name": "HTF_{tf}_RSI_14",      "category": "Multi-TF", "col": "HTF_{tf}_RSI_14",      "desc": "RSI(14) on higher timeframe — oversold/overbought context"},
+    {"name": "HTF_{tf}_EMA_50",      "category": "Multi-TF", "col": "HTF_{tf}_EMA_50",      "desc": "EMA(50) on higher timeframe — HTF trend level"},
+    {"name": "HTF_{tf}_EMA_200",     "category": "Multi-TF", "col": "HTF_{tf}_EMA_200",     "desc": "EMA(200) on higher timeframe — major HTF trend level"},
+    {"name": "HTF_{tf}_MACD_hist",   "category": "Multi-TF", "col": "HTF_{tf}_MACD_hist",   "desc": "MACD histogram on higher timeframe — HTF momentum direction"},
+    {"name": "HTF_{tf}_ADX_14",      "category": "Multi-TF", "col": "HTF_{tf}_ADX_14",      "desc": "ADX(14) on higher timeframe — HTF trend strength"},
+    {"name": "HTF_{tf}_BB_pct_20",   "category": "Multi-TF", "col": "HTF_{tf}_BB_pct_20",   "desc": "Bollinger %B on higher timeframe — HTF price position in band"},
+    {"name": "HTF_{tf}_ATR_14",      "category": "Multi-TF", "col": "HTF_{tf}_ATR_14",      "desc": "ATR(14) on higher timeframe — HTF volatility context"},
+    {"name": "HTF_{tf}_SUPERT_dir",  "category": "Multi-TF", "col": "HTF_{tf}_SUPERT_dir",  "desc": "Supertrend direction on higher TF (+1=bullish, -1=bearish)"},
+    {"name": "HTF_{tf}_STOCH_K",     "category": "Multi-TF", "col": "HTF_{tf}_STOCH_K",     "desc": "Stochastic %K on higher timeframe — HTF momentum"},
+    {"name": "HTF_{tf}_volume_ratio","category": "Multi-TF", "col": "HTF_{tf}_volume_ratio","desc": "Volume ratio on higher timeframe — HTF volume activity"},
+    {"name": "HTF_{tf}_EMA50_slope", "category": "Multi-TF", "col": "HTF_{tf}_EMA50_slope", "desc": "EMA50 slope on higher TF — quantifies HTF trend strength"},
+    {"name": "HTF_{tf}_trend_dir",   "category": "Multi-TF", "col": "HTF_{tf}_trend_dir",   "desc": "Derived: +1 if HTF close > HTF EMA50, -1 if below (trend alignment)"},
+    {"name": "HTF_{tf}_regime",      "category": "Multi-TF", "col": "HTF_{tf}_regime",      "desc": "Derived: +1=trending_up, -1=trending_down, 0=ranging on HTF"},
+    {"name": "HTF_{tf}_ema_20_50_cross","category":"Multi-TF","col":"HTF_{tf}_ema_20_50_cross","desc":"EMA 20/50 crossover on higher TF (+1=golden, -1=death cross)"},
+    {"name": "HTF_{tf}_CCI_20",      "category": "Multi-TF", "col": "HTF_{tf}_CCI_20",      "desc": "CCI(20) on higher timeframe — HTF overbought/oversold"},
+    {"name": "HTF_{tf}_MFI_14",      "category": "Multi-TF", "col": "HTF_{tf}_MFI_14",      "desc": "Money Flow Index on higher timeframe — HTF volume + price pressure"},
 ]
 
-CATEGORIES = ["Trend", "Momentum", "Volume", "Volatility", "Structure", "Patterns", "Regime"]
+CATEGORIES = ["Trend", "Momentum", "Volume", "Volatility", "Structure", "Patterns", "Regime", "Multi-TF"]
+
+# Example timeframes for documentation
+EXAMPLE_TFS = ["1h", "4h", "1d"]
 
 
 @bp.route("/")
@@ -134,4 +154,5 @@ def library_view():
     return render_template("indicators_lib/library.html",
                            by_category=by_category,
                            categories=CATEGORIES,
-                           total=len(INDICATOR_CATALOG))
+                           total=len(INDICATOR_CATALOG),
+                           example_tfs=EXAMPLE_TFS)

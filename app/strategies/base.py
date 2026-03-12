@@ -705,6 +705,105 @@ def _add_candle_patterns(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+# ── Multi-Timeframe Feature Injection ────────────────────────────────────────
+
+# Key HTF columns to inject (forward-filled onto primary TF candles)
+HTF_INJECT_COLS = [
+    "RSI_14", "RSI_7",
+    "EMA_20", "EMA_50", "EMA_200",
+    "MACD_hist", "MACD",
+    "ADX_14",
+    "BB_pct_20", "BB_width_20",
+    "ATR_14", "NATR_14",
+    "STOCH_K",
+    "SUPERT_dir",
+    "CCI_20",
+    "MFI_14",
+    "volume_ratio",
+    "EMA50_slope",
+    "HIGH_VOL_REGIME",
+    "PRICE_RANGE_PCT",
+    "ema_20_50_cross",
+    "ema_50_200_cross",
+]
+
+
+def inject_htf_features(primary_df: pd.DataFrame, htf_df: pd.DataFrame,
+                         htf_label: str,
+                         base_strategy: "BaseStrategy | None" = None) -> pd.DataFrame:
+    """
+    Inject Higher Timeframe (HTF) indicators onto the primary TF DataFrame.
+
+    Each HTF indicator column is prefixed HTF_{htf_label}_ and forward-filled
+    so every primary TF candle knows its HTF context at that moment.
+
+    Also adds derived contextual columns:
+      HTF_{label}_trend_dir  — +1 if close > EMA_50 on HTF, -1 otherwise
+      HTF_{label}_regime     — 1=trending_up, -1=trending_down, 0=ranging
+
+    Args:
+        primary_df: Primary timeframe OHLCV + indicators DataFrame.
+        htf_df: Higher timeframe OHLCV DataFrame (must have 'timestamp' column).
+        htf_label: e.g. '1h', '4h', '1d'.
+        base_strategy: If provided and htf_df lacks indicators, they are computed.
+
+    Returns:
+        primary_df with HTF_ prefixed columns added.
+    """
+    if htf_df is None or len(htf_df) < 20:
+        return primary_df
+
+    htf = htf_df.copy()
+
+    # Compute indicators on HTF if not present
+    if "RSI_14" not in htf.columns and base_strategy is not None:
+        htf = base_strategy.populate_indicators(htf)
+
+    # Derived trend context
+    if "EMA_50" in htf.columns:
+        htf[f"_trend_dir"] = (htf["close"] >= htf["EMA_50"]).map({True: 1, False: -1})
+    if "EMA50_slope" in htf.columns:
+        slope = htf["EMA50_slope"]
+        htf["_regime"] = 0
+        htf.loc[slope > 0.05, "_regime"]  =  1
+        htf.loc[slope < -0.05, "_regime"] = -1
+
+    # Build the set of columns to inject
+    cols_to_inject = []
+    for c in HTF_INJECT_COLS:
+        if c in htf.columns:
+            cols_to_inject.append(c)
+    for derived in ["_trend_dir", "_regime"]:
+        if derived in htf.columns:
+            cols_to_inject.append(derived)
+
+    if not cols_to_inject:
+        return primary_df
+
+    # Rename to HTF_ prefix
+    htf_sub = htf[["timestamp"] + cols_to_inject].copy()
+    rename_map = {c: f"HTF_{htf_label}_{c.lstrip('_')}" for c in cols_to_inject}
+    htf_sub = htf_sub.rename(columns=rename_map)
+
+    # Sort both by timestamp
+    primary_sorted = primary_df.sort_values("timestamp").reset_index(drop=True)
+    htf_sub = htf_sub.sort_values("timestamp").reset_index(drop=True)
+
+    # Merge-asof: for each primary bar, use the latest HTF bar that has completed
+    merged = pd.merge_asof(primary_sorted, htf_sub, on="timestamp", direction="backward")
+
+    # Forward-fill any remaining NaN (early bars before first HTF bar)
+    htf_new_cols = list(rename_map.values())
+    merged[htf_new_cols] = merged[htf_new_cols].fillna(method="ffill")
+
+    return merged
+
+
+def get_htf_col(htf_label: str, base_col: str) -> str:
+    """Return the HTF column name for a given base column and timeframe label."""
+    return f"HTF_{htf_label}_{base_col}"
+
+
 # ── Entry signal handling ─────────────────────────────────────────────────────
 
 class CodeStrategy(BaseStrategy):

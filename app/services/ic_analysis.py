@@ -28,7 +28,7 @@ import pandas as pd
 from scipy import stats as scipy_stats
 
 from .. import models as m
-from ..strategies.base import BaseStrategy
+from ..strategies.base import BaseStrategy, inject_htf_features, HTF_INJECT_COLS
 from ..utils.parquet import parquet_path
 
 logger = logging.getLogger(__name__)
@@ -159,12 +159,30 @@ def _regime_split(df: pd.DataFrame) -> dict[str, pd.DataFrame]:
     return regimes
 
 
+def _build_htf_analysis_cols(timeframes: list) -> list:
+    """Build the list of HTF indicator column names to include in IC analysis."""
+    htf_cols = []
+    primary_tf = timeframes[0] if timeframes else "1h"
+    for tf in timeframes[1:]:
+        for base_col in HTF_INJECT_COLS:
+            htf_cols.append(f"HTF_{tf}_{base_col}")
+        htf_cols.append(f"HTF_{tf}_trend_dir")
+        htf_cols.append(f"HTF_{tf}_regime")
+    return htf_cols
+
+
 def run_ic_analysis(task_id: str, db_path: Path, session_id: str,
                     parquet_dir: Path, timeframes: list) -> None:
     """
-    Background task: compute IC for every indicator across all pairs.
-    Aggregates results by averaging ICs across pairs (more robust).
-    Also computes regime-conditional IC.
+    Background task: compute IC for every indicator across all pairs and all timeframes.
+
+    Multi-timeframe approach:
+    - Primary TF indicators are computed on the primary (lowest) timeframe.
+    - Higher TF indicators are injected as HTF_{tf}_ prefixed columns using
+      forward-fill so each primary bar knows its higher-TF context.
+    - IC is computed for both primary and HTF indicators against the primary TF
+      forward returns (the actual question: does HTF RSI predict LTF returns?).
+    - Results are aggregated across pairs (mean IC = more robust estimate).
     """
     def progress(p, total, msg):
         m.update_task(db_path, task_id, progress=p, total=total, message=msg)
@@ -172,6 +190,7 @@ def run_ic_analysis(task_id: str, db_path: Path, session_id: str,
     pairs = m.list_pairs(db_path, session_id)
     active = [p for p in pairs if not p["excluded"] and p["candle_count"] > 0]
     primary_tf = timeframes[0] if timeframes else "1h"
+    higher_tfs = timeframes[1:] if len(timeframes) > 1 else []
 
     if not active:
         m.update_task(db_path, task_id, status="error",
@@ -179,9 +198,14 @@ def run_ic_analysis(task_id: str, db_path: Path, session_id: str,
                       message="Download data and add indicators first.")
         return
 
+    # Build full analysis column list including HTF columns
+    htf_analysis_cols = _build_htf_analysis_cols(timeframes)
+    all_analysis_cols = ANALYSIS_COLS + htf_analysis_cols
+
     # Sample up to 30 pairs for performance
     sample = active[:30]
-    progress(0, len(sample), f"Computing IC for {len(sample)} pairs on {primary_tf}…")
+    tf_desc = f"{primary_tf}" + (f" + HTF: {', '.join(higher_tfs)}" if higher_tfs else "")
+    progress(0, len(sample), f"Computing IC for {len(sample)} pairs [{tf_desc}]…")
 
     base_strategy = BaseStrategy()
     # Accumulate IC values per indicator, per forward period
@@ -217,13 +241,24 @@ def run_ic_analysis(task_id: str, db_path: Path, session_id: str,
         if "SUPERT_dir" not in df.columns or df["SUPERT_dir"].isna().all():
             df = base_strategy.populate_indicators(df)
 
+        # ── Inject HTF features ───────────────────────────────────────────────
+        for htf in higher_tfs:
+            htf_path = parquet_path(parquet_dir, session_id, pair["symbol"], htf)
+            if not htf_path.exists():
+                continue
+            try:
+                htf_df = pd.read_parquet(htf_path)
+                df = inject_htf_features(df, htf_df, htf, base_strategy)
+            except Exception as e:
+                logger.warning("IC: HTF inject failed %s %s: %s", pair["symbol"], htf, e)
+
         # Compute forward returns for each period
         fwd_returns: dict[int, pd.Series] = {}
         for period in FORWARD_PERIODS:
             fwd_returns[period] = df["close"].pct_change(period).shift(-period)
 
-        # Compute IC for each indicator
-        for col in ANALYSIS_COLS:
+        # Compute IC for each indicator (primary + all HTF columns)
+        for col in all_analysis_cols:
             if col not in df.columns:
                 continue
             series = df[col]
@@ -358,6 +393,14 @@ def run_ic_analysis(task_id: str, db_path: Path, session_id: str,
     volatility_cols = ["BB_pct_20","BB_width_20","NATR_14","HV_20","BB_SQUEEZE","ATR_14"]
     pattern_cols = [c for c in ANALYSIS_COLS if c.startswith("CDL_")]
 
+    # HTF breakdowns: one entry per higher TF
+    htf_top = {}
+    for htf in higher_tfs:
+        htf_col_prefix = f"HTF_{htf}_"
+        htf_results = [r for r in results if r["col"].startswith(htf_col_prefix)]
+        htf_results.sort(key=lambda r: r["max_abs_ic"], reverse=True)
+        htf_top[htf] = htf_results[:10]
+
     def top_in_category(category_cols):
         return sorted(
             [r for r in results if r["col"] in category_cols],
@@ -367,6 +410,8 @@ def run_ic_analysis(task_id: str, db_path: Path, session_id: str,
     final_result = {
         "pairs_analyzed": pairs_done,
         "indicators_analyzed": len(results),
+        "primary_tf": primary_tf,
+        "higher_tfs": higher_tfs,
         "top_overall": top_overall,
         "top_trend": top_in_category(trend_cols),
         "top_momentum": top_in_category(momentum_cols),
@@ -375,6 +420,7 @@ def run_ic_analysis(task_id: str, db_path: Path, session_id: str,
         "top_patterns": top_in_category(pattern_cols),
         "top_trending_regime": top_trending,
         "top_ranging_regime": top_ranging,
+        "htf_top": htf_top,
         "forward_periods": FORWARD_PERIODS,
     }
 

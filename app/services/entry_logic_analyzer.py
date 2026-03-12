@@ -19,7 +19,7 @@ import numpy as np
 import pandas as pd
 
 from .. import models as m
-from ..strategies.base import BaseStrategy
+from ..strategies.base import BaseStrategy, inject_htf_features, HTF_INJECT_COLS
 from ..utils.parquet import parquet_path
 
 logger = logging.getLogger(__name__)
@@ -76,11 +76,15 @@ def _eval_entry_condition(df: pd.DataFrame, condition_code: str) -> pd.Series:
 
 def _simulate_entries(df: pd.DataFrame, entry_mask: pd.Series,
                       hold_bars: int, min_profit_pct: float,
-                      fee_rate: float = 0.001, slippage: float = 0.0005) -> list[dict]:
+                      fee_rate: float = 0.001, slippage: float = 0.0005,
+                      analysis_cols: list | None = None) -> list[dict]:
     """
     For each entry signal, simulate holding for hold_bars candles.
     Returns list of dicts: {entry_idx, is_winner, pnl_pct, indicator_snapshot}
     """
+    if analysis_cols is None:
+        analysis_cols = ANALYSIS_INDICATORS
+
     close = df["close"].values
     entries = []
     entry_indices = entry_mask[entry_mask].index.tolist()
@@ -93,9 +97,9 @@ def _simulate_entries(df: pd.DataFrame, entry_mask: pd.Series,
         exit_price = close[i + hold_bars] * (1 - slippage)
         pnl_pct = (exit_price / entry_price - 1) * 100 - fee_rate * 200
 
-        # Snapshot indicator values at entry
+        # Snapshot indicator values at entry (primary + HTF)
         snap = {}
-        for col in ANALYSIS_INDICATORS:
+        for col in analysis_cols:
             if col in df.columns:
                 val = df[col].iloc[i]
                 if pd.notna(val):
@@ -246,11 +250,14 @@ def run_entry_analysis(task_id: str, db_path: Path, session_id: str,
                       message="Download data and add indicators first.")
         return
 
+    higher_tfs = timeframes[1:] if len(timeframes) > 1 else []
+
     progress(0, len(active), f"Evaluating entry logic on {len(active)} pairs…")
 
     base_strategy = BaseStrategy()
     all_entries: list[dict] = []
     pairs_processed = 0
+    htf_cols_available: set = set()
 
     for pair in active:
         path = parquet_path(parquet_dir, session_id, pair["symbol"], primary_tf)
@@ -269,14 +276,28 @@ def run_entry_analysis(task_id: str, db_path: Path, session_id: str,
         if "RSI_14" not in df.columns:
             df = base_strategy.populate_indicators(df)
 
-        if "entry_signal" not in df.columns:
-            # Evaluate the user's condition directly
-            entry_mask = _eval_entry_condition(df, condition_code)
-        else:
-            # Re-evaluate user condition on top of existing data
-            entry_mask = _eval_entry_condition(df, condition_code)
+        # Inject HTF features so entry conditions can reference HTF_ columns
+        for htf in higher_tfs:
+            htf_path = parquet_path(parquet_dir, session_id, pair["symbol"], htf)
+            if not htf_path.exists():
+                continue
+            try:
+                htf_df = pd.read_parquet(htf_path)
+                df = inject_htf_features(df, htf_df, htf, base_strategy)
+                # Track which HTF columns are available for analysis
+                for c in df.columns:
+                    if c.startswith(f"HTF_{htf}_"):
+                        htf_cols_available.add(c)
+            except Exception as e:
+                logger.warning("Entry analyzer HTF inject %s %s: %s", pair["symbol"], htf, e)
 
-        entries = _simulate_entries(df, entry_mask, hold_bars, min_profit_pct)
+        entry_mask = _eval_entry_condition(df, condition_code)
+
+        # Build full indicator list including any HTF columns present in this df
+        htf_cols_in_df = [c for c in df.columns if c.startswith("HTF_")]
+        full_analysis_cols = ANALYSIS_INDICATORS + htf_cols_in_df
+        entries = _simulate_entries(df, entry_mask, hold_bars, min_profit_pct,
+                                    analysis_cols=full_analysis_cols)
         all_entries.extend(entries)
         pairs_processed += 1
         progress(pairs_processed, len(active),
