@@ -96,23 +96,20 @@ def _ic_for_indicator(series: pd.Series, forward_returns: dict[int, pd.Series],
         except Exception:
             result[f"ic_{period}"] = float("nan")
 
-    # Rolling IC stability (20-period rolling Spearman)
+    # Rolling IC stability — vectorized with pandas rolling rank correlation.
+    # Pearson correlation on ranks == Spearman; replaces ~20 scipy.spearmanr()
+    # calls per indicator with a single vectorized rolling operation.
     primary_period = 10
     if primary_period in forward_returns:
         fwd = forward_returns[primary_period]
         aligned = pd.concat([series, fwd], axis=1).dropna()
         if len(aligned) >= 60:
-            roll_ics = []
-            step = max(1, len(aligned) // 20)  # 20 rolling windows
             window = max(30, len(aligned) // 5)
-            for start in range(0, len(aligned) - window, step):
-                chunk = aligned.iloc[start:start + window]
-                try:
-                    rho, _ = scipy_stats.spearmanr(chunk.iloc[:, 0], chunk.iloc[:, 1])
-                    if not np.isnan(rho):
-                        roll_ics.append(rho)
-                except Exception:
-                    pass
+            x_rank = aligned.iloc[:, 0].rank()
+            y_rank = aligned.iloc[:, 1].rank()
+            rolling_corr = x_rank.rolling(window=window, min_periods=max(20, window // 2)).corr(y_rank)
+            step = max(1, len(aligned) // 20)
+            roll_ics = [v for v in rolling_corr.iloc[::step].tolist() if not np.isnan(v)]
             if len(roll_ics) >= 3:
                 ic_mean = float(np.mean(roll_ics))
                 ic_std  = float(np.std(roll_ics))

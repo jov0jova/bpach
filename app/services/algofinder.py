@@ -157,7 +157,10 @@ def _objective(trial, dfs: list, config: dict, has_htf: bool = False) -> float:
     for df in dfs:
         if len(df) < 100:
             continue
-        enriched = strategy.run(df)
+        # df already has all indicators pre-computed — skip populate_indicators()
+        enriched = df.copy()
+        enriched = strategy.populate_entry_signal(enriched)
+        enriched = strategy.populate_exit_signal(enriched)
         wfo = _walk_forward_backtest(
             enriched, strategy,
             n_splits=config.get("wfo_splits", 3),
@@ -166,6 +169,7 @@ def _objective(trial, dfs: list, config: dict, has_htf: bool = False) -> float:
             fee_rate=config.get("fee_rate", 0.001),
             slippage=config.get("slippage", 0.0005),
             position_size=config.get("position_size", 0.1),
+            fast_mode=True,  # skip indicator recomputation and equity curve per fold
         )
         all_wfo.append(wfo)
 
