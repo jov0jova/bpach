@@ -50,6 +50,7 @@ def create_app(config_class=Config) -> Flask:
     from .routes.analysis import bp as analysis_bp
     from .routes.algofinder import bp as algofinder_bp
     from .routes.ic_analysis import bp as ic_analysis_bp
+    from .routes.indicators_lib import bp as indicators_lib_bp
 
     app.register_blueprint(main_bp)
     app.register_blueprint(sessions_bp, url_prefix="/sessions")
@@ -62,5 +63,6 @@ def create_app(config_class=Config) -> Flask:
     app.register_blueprint(analysis_bp, url_prefix="/analysis")
     app.register_blueprint(algofinder_bp, url_prefix="/algofinder")
     app.register_blueprint(ic_analysis_bp, url_prefix="/ic_analysis")
+    app.register_blueprint(indicators_lib_bp, url_prefix="/indicators_lib")
 
     return app

@@ -28,18 +28,26 @@ def save_entry_logic(session_id):
         flash("Session not found.", "error")
         return redirect(url_for("sessions.list_sessions"))
 
-    entry_logic = request.form.get("entry_logic", "").strip()
-    direction = request.form.get("direction", "long")
+    long_logic = request.form.get("entry_logic_long", "").strip()
+    short_logic = request.form.get("entry_logic_short", "").strip()
 
-    if not entry_logic:
-        flash("Entry logic cannot be empty. Use Skip to go Path B.", "error")
+    if not long_logic and not short_logic:
+        flash("At least one entry condition (long or short) is required. Use Skip for Path B.", "error")
         return redirect(url_for("entry_logic.entry_logic_view", session_id=session_id))
 
-    # Store with direction prefix for the analyzer
-    full_logic = f"# direction: {direction}\n{entry_logic}"
-    db.save_entry_logic(session_id, full_logic, "path_a")
-    flash("Entry logic saved. Now add indicators and run the analysis.", "success")
-    return redirect(url_for("indicators.indicators_view", session_id=session_id))
+    # Build combined entry_logic for backward compat with analyzer
+    parts = []
+    if long_logic:
+        parts.append(f"# direction: long\n{long_logic}")
+    if short_logic:
+        parts.append(f"# direction: short\n{short_logic}")
+    combined = "\n\n".join(parts)
+
+    db.save_entry_logic(session_id, combined, "path_a",
+                        entry_logic_long=long_logic,
+                        entry_logic_short=short_logic)
+    flash("Entry logic saved.", "success")
+    return redirect(url_for("entry_logic.entry_logic_view", session_id=session_id))
 
 
 @bp.route("/<session_id>/skip", methods=["POST"])
@@ -51,7 +59,7 @@ def skip_to_path_b(session_id):
 
     db.save_entry_logic(session_id, "", "path_b")
     flash("Skipped entry logic — using Path B (Optuna free search).", "info")
-    return redirect(url_for("indicators.indicators_view", session_id=session_id))
+    return redirect(url_for("ic_analysis.ic_view", session_id=session_id))
 
 
 @bp.route("/<session_id>/analyze", methods=["POST"])

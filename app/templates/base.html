@@ -37,40 +37,40 @@
       <i class="bi bi-cloud-download-fill me-2"></i>
       <span class="phase-num">2</span> Download Data
     </a>
+    <a class="nav-link caf-nav-link {% if request.endpoint and request.endpoint == 'indicators.indicators_view' %}active{% endif %}"
+       href="{{ url_for('indicators.indicators_view', session_id=session.id) }}">
+      <i class="bi bi-graph-up-arrow me-2"></i>
+      <span class="phase-num">3</span> Add Indicators
+    </a>
     <a class="nav-link caf-nav-link {% if request.endpoint and 'pairlist' in request.endpoint %}active{% endif %}"
        href="{{ url_for('pairlist.pairlist_view', session_id=session.id) }}">
       <i class="bi bi-list-check me-2"></i>
-      <span class="phase-num">3</span> Pairlist
+      <span class="phase-num">4</span> Pairlist
     </a>
     <a class="nav-link caf-nav-link {% if request.endpoint and 'entry_logic' in request.endpoint %}active{% endif %}"
        href="{{ url_for('entry_logic.entry_logic_view', session_id=session.id) }}">
       <i class="bi bi-funnel-fill me-2"></i>
-      <span class="phase-num">4</span> Entry Logic
-    </a>
-    <a class="nav-link caf-nav-link {% if request.endpoint and 'indicators' in request.endpoint %}active{% endif %}"
-       href="{{ url_for('indicators.indicators_view', session_id=session.id) }}">
-      <i class="bi bi-graph-up-arrow me-2"></i>
-      <span class="phase-num">5</span> Add Indicators
+      <span class="phase-num">5</span> Entry Logic
     </a>
     <a class="nav-link caf-nav-link {% if request.endpoint and 'ic_analysis' in request.endpoint %}active{% endif %}"
        href="{{ url_for('ic_analysis.ic_view', session_id=session.id) }}">
       <i class="bi bi-graph-up me-2"></i>
-      <span class="phase-num">5b</span> IC Analysis
-    </a>
-    <a class="nav-link caf-nav-link {% if request.endpoint and 'backtest' in request.endpoint %}active{% endif %}"
-       href="{{ url_for('backtest.backtest_view', session_id=session.id) }}">
-      <i class="bi bi-play-circle-fill me-2"></i>
-      <span class="phase-num">6</span> Backtest
-    </a>
-    <a class="nav-link caf-nav-link {% if request.endpoint and 'analysis' in request.endpoint %}active{% endif %}"
-       href="{{ url_for('analysis.analysis_view', session_id=session.id) }}">
-      <i class="bi bi-bar-chart-fill me-2"></i>
-      <span class="phase-num">7</span> Analysis
+      <span class="phase-num">6</span> IC Analysis
     </a>
     <a class="nav-link caf-nav-link {% if request.endpoint and 'algofinder' in request.endpoint %}active{% endif %}"
        href="{{ url_for('algofinder.algofinder_view', session_id=session.id) }}">
       <i class="bi bi-search-heart-fill me-2"></i>
-      <span class="phase-num">8</span> Algo Finder
+      <span class="phase-num">7</span> Algo Finder
+    </a>
+    <a class="nav-link caf-nav-link {% if request.endpoint and 'backtest' in request.endpoint %}active{% endif %}"
+       href="{{ url_for('backtest.backtest_view', session_id=session.id) }}">
+      <i class="bi bi-play-circle-fill me-2"></i>
+      <span class="phase-num">8</span> Backtest
+    </a>
+    <a class="nav-link caf-nav-link {% if request.endpoint and 'analysis' in request.endpoint %}active{% endif %}"
+       href="{{ url_for('analysis.analysis_view', session_id=session.id) }}">
+      <i class="bi bi-bar-chart-fill me-2"></i>
+      <span class="phase-num">9</span> Analysis
     </a>
 
     <hr class="caf-hr my-2">
@@ -82,6 +82,14 @@
     </a>
     <a class="nav-link caf-nav-link" href="{{ url_for('sessions.new_session') }}">
       <i class="bi bi-plus-circle me-2"></i>New Session
+    </a>
+
+    <hr class="caf-hr my-2">
+
+    <div class="nav-section-label">LIBRARY</div>
+    <a class="nav-link caf-nav-link {% if request.endpoint and request.endpoint == 'indicators_lib.library_view' %}active{% endif %}"
+       href="{{ url_for('indicators_lib.library_view') }}">
+      <i class="bi bi-collection-fill me-2"></i>Indicators
     </a>
   </nav>
 

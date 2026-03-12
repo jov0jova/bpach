@@ -18,25 +18,29 @@ def init_db(db_path: str | Path) -> None:
     con = _conn(db_path)
     con.execute("""
         CREATE TABLE IF NOT EXISTS sessions (
-            id              TEXT PRIMARY KEY,
-            name            TEXT NOT NULL,
-            exchange        TEXT NOT NULL DEFAULT 'binance',
-            timeframes      TEXT NOT NULL DEFAULT '["15m","1h","4h"]',
-            quote_asset     TEXT NOT NULL DEFAULT 'USDT',
-            status          TEXT NOT NULL DEFAULT 'created',
-            created_at      TIMESTAMP NOT NULL,
-            updated_at      TIMESTAMP NOT NULL,
-            notes           TEXT DEFAULT '',
-            entry_logic     TEXT DEFAULT '',
-            entry_mode      TEXT NOT NULL DEFAULT 'path_b',
-            pairlist_config TEXT DEFAULT '[]'
+            id                TEXT PRIMARY KEY,
+            name              TEXT NOT NULL,
+            exchange          TEXT NOT NULL DEFAULT 'binance',
+            timeframes        TEXT NOT NULL DEFAULT '["15m","1h","4h"]',
+            quote_asset       TEXT NOT NULL DEFAULT 'USDT',
+            status            TEXT NOT NULL DEFAULT 'created',
+            created_at        TIMESTAMP NOT NULL,
+            updated_at        TIMESTAMP NOT NULL,
+            notes             TEXT DEFAULT '',
+            entry_logic       TEXT DEFAULT '',
+            entry_mode        TEXT NOT NULL DEFAULT 'path_b',
+            pairlist_config   TEXT DEFAULT '[]',
+            entry_logic_long  TEXT DEFAULT '',
+            entry_logic_short TEXT DEFAULT ''
         )
     """)
     # Migrate existing sessions tables that may be missing the new columns
     for col, typedef in [
-        ("entry_logic",     "TEXT DEFAULT ''"),
-        ("entry_mode",      "TEXT NOT NULL DEFAULT 'path_b'"),
-        ("pairlist_config", "TEXT DEFAULT '[]'"),
+        ("entry_logic",       "TEXT DEFAULT ''"),
+        ("entry_mode",        "TEXT NOT NULL DEFAULT 'path_b'"),
+        ("pairlist_config",   "TEXT DEFAULT '[]'"),
+        ("entry_logic_long",  "TEXT DEFAULT ''"),
+        ("entry_logic_short", "TEXT DEFAULT ''"),
     ]:
         try:
             con.execute(f"ALTER TABLE sessions ADD COLUMN {col} {typedef}")
@@ -163,24 +167,15 @@ def create_session(db_path, name: str, exchange: str, timeframes: list, quote_as
     now = datetime.now(timezone.utc)
     con = _conn(db_path)
     con.execute(
-        "INSERT INTO sessions VALUES (?,?,?,?,?,?,?,?,?)",
-        [sid, name, exchange, json.dumps(timeframes), quote_asset, "created", now, now, ""]
+        "INSERT INTO sessions VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        [sid, name, exchange, json.dumps(timeframes), quote_asset, "created", now, now, "", "", "path_b", "[]", "", ""]
     )
     con.close()
-    return get_session(db_path, sid)
+    return get_session_extended(db_path, sid)
 
 
 def get_session(db_path, session_id: str) -> dict | None:
-    con = _conn(db_path)
-    row = con.execute("SELECT * FROM sessions WHERE id=?", [session_id]).fetchone()
-    con.close()
-    if not row:
-        return None
-    cols = ["id","name","exchange","timeframes","quote_asset","status",
-            "created_at","updated_at","notes"]
-    d = dict(zip(cols, row))
-    d["timeframes"] = json.loads(d["timeframes"])
-    return d
+    return get_session_extended(db_path, session_id)
 
 
 def list_sessions(db_path) -> list:
@@ -188,11 +183,21 @@ def list_sessions(db_path) -> list:
     rows = con.execute("SELECT * FROM sessions ORDER BY created_at DESC").fetchall()
     con.close()
     cols = ["id","name","exchange","timeframes","quote_asset","status",
-            "created_at","updated_at","notes"]
+            "created_at","updated_at","notes","entry_logic","entry_mode","pairlist_config",
+            "entry_logic_long","entry_logic_short"]
     result = []
     for row in rows:
-        d = dict(zip(cols, row))
+        d = dict(zip(cols[:len(row)], row))
+        d.setdefault("entry_logic", "")
+        d.setdefault("entry_mode", "path_b")
+        d.setdefault("pairlist_config", "[]")
+        d.setdefault("entry_logic_long", "")
+        d.setdefault("entry_logic_short", "")
         d["timeframes"] = json.loads(d["timeframes"])
+        try:
+            d["pairlist_config"] = json.loads(d["pairlist_config"] or "[]")
+        except Exception:
+            d["pairlist_config"] = []
         result.append(d)
     return result
 
@@ -500,11 +505,12 @@ def save_algo_result(db_path, session_id: str, run_id: str, rank: int,
 
 # ── Entry Logic & Pairlist Config ────────────────────────────────────────────
 
-def save_entry_logic(db_path, session_id: str, entry_logic: str, entry_mode: str) -> None:
+def save_entry_logic(db_path, session_id: str, entry_logic: str, entry_mode: str,
+                     entry_logic_long: str = "", entry_logic_short: str = "") -> None:
     con = _conn(db_path)
     con.execute(
-        "UPDATE sessions SET entry_logic=?, entry_mode=?, updated_at=? WHERE id=?",
-        [entry_logic, entry_mode, datetime.now(timezone.utc), session_id]
+        "UPDATE sessions SET entry_logic=?, entry_mode=?, entry_logic_long=?, entry_logic_short=?, updated_at=? WHERE id=?",
+        [entry_logic, entry_mode, entry_logic_long, entry_logic_short, datetime.now(timezone.utc), session_id]
     )
     con.close()
 
@@ -519,19 +525,22 @@ def save_pairlist_config(db_path, session_id: str, config: list) -> None:
 
 
 def get_session_extended(db_path, session_id: str) -> dict | None:
-    """Like get_session but also returns entry_logic, entry_mode, pairlist_config."""
+    """Like get_session but also returns entry_logic, entry_mode, pairlist_config, entry_logic_long/short."""
     con = _conn(db_path)
     row = con.execute("SELECT * FROM sessions WHERE id=?", [session_id]).fetchone()
     con.close()
     if not row:
         return None
     cols = ["id", "name", "exchange", "timeframes", "quote_asset", "status",
-            "created_at", "updated_at", "notes", "entry_logic", "entry_mode", "pairlist_config"]
+            "created_at", "updated_at", "notes", "entry_logic", "entry_mode", "pairlist_config",
+            "entry_logic_long", "entry_logic_short"]
     # Handle tables created before migration (fewer columns)
     d = dict(zip(cols[:len(row)], row))
     d.setdefault("entry_logic", "")
     d.setdefault("entry_mode", "path_b")
     d.setdefault("pairlist_config", "[]")
+    d.setdefault("entry_logic_long", "")
+    d.setdefault("entry_logic_short", "")
     d["timeframes"] = json.loads(d["timeframes"])
     try:
         d["pairlist_config"] = json.loads(d["pairlist_config"] or "[]")

@@ -1,0 +1,137 @@
+from flask import Blueprint, render_template
+
+bp = Blueprint("indicators_lib", __name__)
+
+# Master indicator catalog — all indicators available in base strategy
+INDICATOR_CATALOG = [
+    # ── Trend ────────────────────────────────────────────────────────────────
+    {"name": "EMA_8",          "category": "Trend",     "col": "EMA_8",          "desc": "Exponential Moving Average (8 period)"},
+    {"name": "EMA_20",         "category": "Trend",     "col": "EMA_20",         "desc": "Exponential Moving Average (20 period)"},
+    {"name": "EMA_50",         "category": "Trend",     "col": "EMA_50",         "desc": "Exponential Moving Average (50 period)"},
+    {"name": "EMA_100",        "category": "Trend",     "col": "EMA_100",        "desc": "Exponential Moving Average (100 period)"},
+    {"name": "EMA_200",        "category": "Trend",     "col": "EMA_200",        "desc": "Exponential Moving Average (200 period)"},
+    {"name": "SMA_20",         "category": "Trend",     "col": "SMA_20",         "desc": "Simple Moving Average (20 period)"},
+    {"name": "SMA_50",         "category": "Trend",     "col": "SMA_50",         "desc": "Simple Moving Average (50 period)"},
+    {"name": "SMA_200",        "category": "Trend",     "col": "SMA_200",        "desc": "Simple Moving Average (200 period)"},
+    {"name": "WMA_20",         "category": "Trend",     "col": "WMA_20",         "desc": "Weighted Moving Average (20 period)"},
+    {"name": "HMA_20",         "category": "Trend",     "col": "HMA_20",         "desc": "Hull Moving Average (20 period) — low lag"},
+    {"name": "TEMA_20",        "category": "Trend",     "col": "TEMA_20",        "desc": "Triple Exponential Moving Average (20 period)"},
+    {"name": "DEMA_20",        "category": "Trend",     "col": "DEMA_20",        "desc": "Double Exponential Moving Average (20 period)"},
+    {"name": "VWAP",           "category": "Trend",     "col": "VWAP",           "desc": "Volume-Weighted Average Price (rolling session)"},
+    {"name": "SUPERT_upper",   "category": "Trend",     "col": "SUPERT_upper",   "desc": "Supertrend upper band (period=10, mult=3)"},
+    {"name": "SUPERT_lower",   "category": "Trend",     "col": "SUPERT_lower",   "desc": "Supertrend lower band"},
+    {"name": "SUPERT_dir",     "category": "Trend",     "col": "SUPERT_dir",     "desc": "Supertrend direction (+1=bullish, -1=bearish)"},
+    {"name": "SUPERT2_dir",    "category": "Trend",     "col": "SUPERT2_dir",    "desc": "Supertrend direction — slower (period=14, mult=2)"},
+    {"name": "PSAR",           "category": "Trend",     "col": "PSAR",           "desc": "Parabolic SAR value"},
+    {"name": "PSAR_dir",       "category": "Trend",     "col": "PSAR_dir",       "desc": "Parabolic SAR direction (+1=bullish, -1=bearish)"},
+    {"name": "ICH_cloud_pos",  "category": "Trend",     "col": "ICH_cloud_pos",  "desc": "Ichimoku cloud position (+1=above cloud, -1=below, 0=in)"},
+    {"name": "ema_20_50_cross","category": "Trend",     "col": "ema_20_50_cross","desc": "EMA 20/50 crossover (+1=golden, -1=death cross)"},
+    {"name": "ema_50_200_cross","category":"Trend",     "col": "ema_50_200_cross","desc": "EMA 50/200 crossover (+1=golden, -1=death cross)"},
+    {"name": "ema_alignment",  "category": "Trend",     "col": "ema_alignment",  "desc": "EMA alignment score: +1 if EMA8>EMA20>EMA50>EMA200"},
+    {"name": "DPO_20",         "category": "Trend",     "col": "DPO_20",         "desc": "Detrended Price Oscillator (20 period)"},
+    {"name": "AROON_up",       "category": "Trend",     "col": "AROON_up",       "desc": "Aroon Up (25 period)"},
+    {"name": "AROON_down",     "category": "Trend",     "col": "AROON_down",     "desc": "Aroon Down (25 period)"},
+    {"name": "AROON_osc",      "category": "Trend",     "col": "AROON_osc",      "desc": "Aroon Oscillator (Up − Down)"},
+    # ── Momentum ─────────────────────────────────────────────────────────────
+    {"name": "RSI_7",          "category": "Momentum",  "col": "RSI_7",          "desc": "Relative Strength Index (7 period) — fast"},
+    {"name": "RSI_14",         "category": "Momentum",  "col": "RSI_14",         "desc": "Relative Strength Index (14 period) — standard"},
+    {"name": "RSI_21",         "category": "Momentum",  "col": "RSI_21",         "desc": "Relative Strength Index (21 period) — slow"},
+    {"name": "MACD",           "category": "Momentum",  "col": "MACD",           "desc": "MACD line (12,26)"},
+    {"name": "MACD_signal",    "category": "Momentum",  "col": "MACD_signal",    "desc": "MACD signal line (9-period EMA of MACD)"},
+    {"name": "MACD_hist",      "category": "Momentum",  "col": "MACD_hist",      "desc": "MACD histogram (MACD − signal)"},
+    {"name": "STOCH_K",        "category": "Momentum",  "col": "STOCH_K",        "desc": "Stochastic %K (14,3,3)"},
+    {"name": "STOCH_D",        "category": "Momentum",  "col": "STOCH_D",        "desc": "Stochastic %D (signal line)"},
+    {"name": "STOCHRSI_K",     "category": "Momentum",  "col": "STOCHRSI_K",     "desc": "StochRSI %K — RSI-based stochastic"},
+    {"name": "STOCHRSI_D",     "category": "Momentum",  "col": "STOCHRSI_D",     "desc": "StochRSI %D signal"},
+    {"name": "WILLR_14",       "category": "Momentum",  "col": "WILLR_14",       "desc": "Williams %R (14 period), range -100 to 0"},
+    {"name": "ROC_10",         "category": "Momentum",  "col": "ROC_10",         "desc": "Rate of Change (10 period), in percent"},
+    {"name": "CCI_20",         "category": "Momentum",  "col": "CCI_20",         "desc": "Commodity Channel Index (20 period)"},
+    {"name": "CMO_14",         "category": "Momentum",  "col": "CMO_14",         "desc": "Chande Momentum Oscillator (14 period)"},
+    {"name": "FISHER_9",       "category": "Momentum",  "col": "FISHER_9",       "desc": "Fisher Transform (9 period) — highlights extremes"},
+    {"name": "AO",             "category": "Momentum",  "col": "AO",             "desc": "Awesome Oscillator (5/34 SMA of midprice)"},
+    {"name": "TRIX_15",        "category": "Momentum",  "col": "TRIX_15",        "desc": "TRIX: triple-smoothed EMA ROC (15 period)"},
+    {"name": "KST",            "category": "Momentum",  "col": "KST",            "desc": "Know Sure Thing oscillator"},
+    {"name": "PPO",            "category": "Momentum",  "col": "PPO",            "desc": "Percentage Price Oscillator"},
+    {"name": "UO",             "category": "Momentum",  "col": "UO",             "desc": "Ultimate Oscillator (7,14,28 periods)"},
+    {"name": "close_pct_change","category":"Momentum",  "col": "close_pct_change","desc": "Bar-over-bar close percent change"},
+    # ── Volume ───────────────────────────────────────────────────────────────
+    {"name": "OBV",            "category": "Volume",    "col": "OBV",            "desc": "On-Balance Volume"},
+    {"name": "OBV_trend",      "category": "Volume",    "col": "OBV_trend",      "desc": "OBV vs 20-bar EMA of OBV (+1 rising, -1 falling)"},
+    {"name": "MFI_14",         "category": "Volume",    "col": "MFI_14",         "desc": "Money Flow Index (14 period) — volume RSI"},
+    {"name": "CMF_20",         "category": "Volume",    "col": "CMF_20",         "desc": "Chaikin Money Flow (20 period)"},
+    {"name": "VWAP_dist",      "category": "Volume",    "col": "VWAP_dist",      "desc": "Distance from VWAP in percent"},
+    {"name": "volume_ratio",   "category": "Volume",    "col": "volume_ratio",   "desc": "Volume / 20-bar moving average of volume"},
+    {"name": "FORCE_13",       "category": "Volume",    "col": "FORCE_13",       "desc": "Force Index (13 period EMA)"},
+    {"name": "EOM_14",         "category": "Volume",    "col": "EOM_14",         "desc": "Ease of Movement (14 period) — price/volume efficiency"},
+    {"name": "MASS_9",         "category": "Volume",    "col": "MASS_9",         "desc": "Mass Index (9,25 period) — volatility reversal signal"},
+    # ── Volatility ───────────────────────────────────────────────────────────
+    {"name": "ATR_14",         "category": "Volatility","col": "ATR_14",         "desc": "Average True Range (14 period)"},
+    {"name": "NATR_14",        "category": "Volatility","col": "NATR_14",        "desc": "Normalized ATR (ATR/close × 100)"},
+    {"name": "HV_20",          "category": "Volatility","col": "HV_20",          "desc": "Historical Volatility (20-bar std of log returns × √252)"},
+    {"name": "ADX_14",         "category": "Volatility","col": "ADX_14",         "desc": "Average Directional Index — trend strength"},
+    {"name": "DMP_14",         "category": "Volatility","col": "DMP_14",         "desc": "DMI+ (positive directional indicator)"},
+    {"name": "DMN_14",         "category": "Volatility","col": "DMN_14",         "desc": "DMI- (negative directional indicator)"},
+    {"name": "BB_upper_20",    "category": "Volatility","col": "BB_upper_20",    "desc": "Bollinger Band upper (20, 2σ)"},
+    {"name": "BB_lower_20",    "category": "Volatility","col": "BB_lower_20",    "desc": "Bollinger Band lower"},
+    {"name": "BB_mid_20",      "category": "Volatility","col": "BB_mid_20",      "desc": "Bollinger Band middle (20 SMA)"},
+    {"name": "BB_pct_20",      "category": "Volatility","col": "BB_pct_20",      "desc": "Bollinger %B: position within bands (0=lower, 1=upper)"},
+    {"name": "BB_width_20",    "category": "Volatility","col": "BB_width_20",    "desc": "Bollinger Band width — volatility proxy"},
+    {"name": "BB_squeeze",     "category": "Volatility","col": "BB_squeeze",     "desc": "Bollinger squeeze flag (BB width < Keltner width)"},
+    {"name": "KC_upper",       "category": "Volatility","col": "KC_upper",       "desc": "Keltner Channel upper band"},
+    {"name": "KC_lower",       "category": "Volatility","col": "KC_lower",       "desc": "Keltner Channel lower band"},
+    # ── Price structure ───────────────────────────────────────────────────────
+    {"name": "body_pct",       "category": "Structure", "col": "body_pct",       "desc": "Candle body as % of full range"},
+    {"name": "upper_wick",     "category": "Structure", "col": "upper_wick",     "desc": "Upper wick as % of full range"},
+    {"name": "lower_wick",     "category": "Structure", "col": "lower_wick",     "desc": "Lower wick as % of full range"},
+    {"name": "pivot_R1",       "category": "Structure", "col": "pivot_R1",       "desc": "Standard pivot point resistance 1"},
+    {"name": "pivot_S1",       "category": "Structure", "col": "pivot_S1",       "desc": "Standard pivot point support 1"},
+    {"name": "pivot_pp",       "category": "Structure", "col": "pivot_pp",       "desc": "Standard pivot point (H+L+C)/3"},
+    {"name": "swing_high",     "category": "Structure", "col": "swing_high",     "desc": "Recent swing high (5-bar lookback)"},
+    {"name": "swing_low",      "category": "Structure", "col": "swing_low",      "desc": "Recent swing low (5-bar lookback)"},
+    {"name": "dist_swing_high","category": "Structure", "col": "dist_swing_high","desc": "Distance from swing high in percent"},
+    {"name": "dist_swing_low", "category": "Structure", "col": "dist_swing_low", "desc": "Distance from swing low in percent"},
+    # ── Candlestick patterns ─────────────────────────────────────────────────
+    {"name": "doji",              "category": "Patterns", "col": "doji",              "desc": "Doji — body < 10% of range; indecision"},
+    {"name": "spinning_top",      "category": "Patterns", "col": "spinning_top",      "desc": "Spinning top — small body, equal wicks"},
+    {"name": "marubozu_bull",     "category": "Patterns", "col": "marubozu_bull",     "desc": "Bullish Marubozu — full bull body, no wicks"},
+    {"name": "marubozu_bear",     "category": "Patterns", "col": "marubozu_bear",     "desc": "Bearish Marubozu — full bear body, no wicks"},
+    {"name": "hammer",            "category": "Patterns", "col": "hammer",            "desc": "Hammer — lower wick 2× body, at support"},
+    {"name": "inverted_hammer",   "category": "Patterns", "col": "inverted_hammer",   "desc": "Inverted Hammer — upper wick 2× body"},
+    {"name": "hanging_man",       "category": "Patterns", "col": "hanging_man",       "desc": "Hanging Man — hammer shape at highs (bearish)"},
+    {"name": "shooting_star",     "category": "Patterns", "col": "shooting_star",     "desc": "Shooting Star — upper wick 2× body at highs"},
+    {"name": "bullish_engulfing", "category": "Patterns", "col": "bullish_engulfing", "desc": "Bullish Engulfing — bull candle covers prior bear"},
+    {"name": "bearish_engulfing", "category": "Patterns", "col": "bearish_engulfing", "desc": "Bearish Engulfing — bear candle covers prior bull"},
+    {"name": "bullish_harami",    "category": "Patterns", "col": "bullish_harami",    "desc": "Bullish Harami — small bull inside prior large bear"},
+    {"name": "bearish_harami",    "category": "Patterns", "col": "bearish_harami",    "desc": "Bearish Harami — small bear inside prior large bull"},
+    {"name": "dark_cloud_cover",  "category": "Patterns", "col": "dark_cloud_cover",  "desc": "Dark Cloud Cover — bearish reversal two-candle pattern"},
+    {"name": "piercing_line",     "category": "Patterns", "col": "piercing_line",     "desc": "Piercing Line — bullish reversal two-candle pattern"},
+    {"name": "morning_star",      "category": "Patterns", "col": "morning_star",      "desc": "Morning Star — bullish three-candle reversal"},
+    {"name": "evening_star",      "category": "Patterns", "col": "evening_star",      "desc": "Evening Star — bearish three-candle reversal"},
+    {"name": "three_white_soldiers","category":"Patterns","col": "three_white_soldiers","desc": "Three White Soldiers — strong bullish continuation"},
+    {"name": "three_black_crows", "category": "Patterns", "col": "three_black_crows", "desc": "Three Black Crows — strong bearish continuation"},
+    {"name": "three_inside_up",   "category": "Patterns", "col": "three_inside_up",   "desc": "Three Inside Up — bullish reversal confirmation"},
+    {"name": "three_inside_down", "category": "Patterns", "col": "three_inside_down", "desc": "Three Inside Down — bearish reversal confirmation"},
+    {"name": "tweezer_top",       "category": "Patterns", "col": "tweezer_top",       "desc": "Tweezer Top — two candles share same high; bearish"},
+    {"name": "tweezer_bottom",    "category": "Patterns", "col": "tweezer_bottom",    "desc": "Tweezer Bottom — two candles share same low; bullish"},
+    {"name": "inside_bar",        "category": "Patterns", "col": "inside_bar",        "desc": "Inside Bar — full range within prior bar"},
+    {"name": "outside_bar",       "category": "Patterns", "col": "outside_bar",       "desc": "Outside Bar — engulfs prior bar range"},
+    # ── Market regime ─────────────────────────────────────────────────────────
+    {"name": "regime",            "category": "Regime",   "col": "regime",            "desc": "Market regime: trending_up / trending_down / ranging"},
+    {"name": "vol_regime",        "category": "Regime",   "col": "vol_regime",        "desc": "Volatility regime: high_vol / low_vol"},
+    {"name": "EMA50_slope",       "category": "Regime",   "col": "EMA50_slope",       "desc": "EMA50 slope (used for trending/ranging classification)"},
+]
+
+CATEGORIES = ["Trend", "Momentum", "Volume", "Volatility", "Structure", "Patterns", "Regime"]
+
+
+@bp.route("/")
+def library_view():
+    by_category = {cat: [] for cat in CATEGORIES}
+    for ind in INDICATOR_CATALOG:
+        cat = ind["category"]
+        if cat in by_category:
+            by_category[cat].append(ind)
+    return render_template("indicators_lib/library.html",
+                           by_category=by_category,
+                           categories=CATEGORIES,
+                           total=len(INDICATOR_CATALOG))

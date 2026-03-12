@@ -3,8 +3,8 @@
 
 {% block content %}
 <div class="mt-3 mb-4">
-  <h2 class="mb-0"><i class="bi bi-funnel-fill me-2 text-warning"></i>Phase 4 — Entry Logic</h2>
-  <small class="text-muted">Define your entry conditions or skip to let Optuna search freely.</small>
+  <h2 class="mb-0"><i class="bi bi-funnel-fill me-2 text-warning"></i>Phase 5 — Entry Logic</h2>
+  <small class="text-muted">Define your long and/or short entry conditions, or skip to let Optuna search freely (Path B).</small>
 </div>
 
 <!-- Path selector cards -->
@@ -20,11 +20,11 @@
           </div>
         </div>
         <ol class="small text-muted mb-0 ps-3">
-          <li>Define entry conditions (e.g. RSI_14 &lt; 35 and EMA_20 &gt; EMA_50)</li>
+          <li>Define long and/or short entry conditions</li>
           <li>System finds all historical entry points</li>
           <li>Classifies each as winner or loser (hold N bars)</li>
-          <li>Cohen's D analysis reveals which indicators discriminate winners</li>
-          <li>Optuna fine-tunes thresholds for the best complementary filters</li>
+          <li>Cohen's D reveals which indicators discriminate winners</li>
+          <li>Optuna fine-tunes thresholds for the best filters</li>
         </ol>
       </div>
     </div>
@@ -41,9 +41,8 @@
         </div>
         <ol class="small text-muted mb-0 ps-3">
           <li>Skip entry logic</li>
-          <li>Add indicators</li>
           <li>Optuna searches across the full indicator space</li>
-          <li>Walk-forward OOS validation protects against overfitting</li>
+          <li>Walk-forward OOS validation guards against overfitting</li>
           <li>Returns top 5 discovered strategies</li>
         </ol>
       </div>
@@ -52,12 +51,12 @@
 </div>
 
 {% if session.entry_mode == 'path_a' and session.entry_logic %}
-<!-- Current saved logic -->
 <div class="alert alert-warning d-flex align-items-start gap-2 py-2 mb-3">
   <i class="bi bi-check-circle-fill mt-1"></i>
   <div>
     <strong>Path A active</strong> — entry logic saved.
-    {% set task = task %}
+    {% if session.entry_logic_long %}<span class="badge bg-success ms-1">Long</span>{% endif %}
+    {% if session.entry_logic_short %}<span class="badge bg-danger ms-1">Short</span>{% endif %}
     {% if task and task.status == 'done' %}
     <a href="{{ url_for('entry_logic.analysis_results', session_id=session.id) }}"
        class="ms-2 btn btn-sm btn-outline-warning">View Analysis Results →</a>
@@ -67,192 +66,170 @@
 {% elif session.entry_mode == 'path_b' %}
 <div class="alert alert-info d-flex align-items-start gap-2 py-2 mb-3">
   <i class="bi bi-info-circle-fill mt-1"></i>
-  <strong>Path B active</strong> — free Optuna search. You can still define entry logic below to switch to Path A.
+  <strong>Path B active</strong> — free Optuna search. Define entry logic below to switch to Path A.
 </div>
 {% endif %}
 
+<form method="post" action="{{ url_for('entry_logic.save_entry_logic', session_id=session.id) }}">
 <div class="row g-4">
-  <!-- Entry Logic Form -->
-  <div class="col-lg-7">
-    <div class="card caf-card">
-      <div class="card-header caf-card-header">
-        <i class="bi bi-code-square me-2 text-warning"></i>Define Entry Conditions (Path A)
+
+  <!-- Long Entry -->
+  <div class="col-lg-6">
+    <div class="card caf-card h-100">
+      <div class="card-header caf-card-header d-flex align-items-center gap-2">
+        <span class="badge bg-success">LONG</span>
+        <span class="text-light">Long Entry Condition</span>
+        <small class="text-muted ms-auto">leave blank to skip longs</small>
       </div>
       <div class="card-body">
-        <form method="post" action="{{ url_for('entry_logic.save_entry_logic', session_id=session.id) }}">
-
-          <div class="mb-3">
-            <label class="form-label small">Direction</label>
-            <div class="d-flex gap-3">
-              <div class="form-check">
-                <input class="form-check-input" type="radio" name="direction" value="long"
-                       id="dir-long" {% if not session.entry_logic or 'direction: long' in session.entry_logic %}checked{% endif %}>
-                <label class="form-check-label small" for="dir-long">Long only</label>
-              </div>
-              <div class="form-check">
-                <input class="form-check-input" type="radio" name="direction" value="short"
-                       id="dir-short" {% if 'direction: short' in session.entry_logic %}checked{% endif %}>
-                <label class="form-check-label small" for="dir-short">Short only</label>
-              </div>
-              <div class="form-check">
-                <input class="form-check-input" type="radio" name="direction" value="both"
-                       id="dir-both" {% if 'direction: both' in session.entry_logic %}checked{% endif %}>
-                <label class="form-check-label small" for="dir-both">Both</label>
-              </div>
-            </div>
-          </div>
-
-          <div class="mb-3">
-            <label class="form-label small">Entry Condition <span class="text-muted">(Python boolean expression)</span></label>
-            <textarea name="entry_logic" class="form-control caf-input font-monospace"
-                      rows="6" placeholder="RSI_14 < 35 and EMA_20 > EMA_50 and MACD_hist > 0">{% if session.entry_logic %}{% set lines = session.entry_logic.splitlines() %}{% for line in lines %}{% if not line.startswith('# direction:') %}{{ line }}
-{% endif %}{% endfor %}{% endif %}</textarea>
-            <small class="text-muted">Use indicator column names directly. Combine with <code>and</code>, <code>or</code>, <code>&lt;</code>, <code>&gt;</code>.</small>
-          </div>
-
-          <button type="submit" class="btn btn-warning">
-            <i class="bi bi-funnel me-1"></i>Save Entry Logic (Path A)
-          </button>
-        </form>
+        <textarea name="entry_logic_long" class="form-control caf-input font-monospace"
+                  rows="8"
+                  placeholder="RSI_14 < 35 and EMA_20 > EMA_50 and MACD_hist > 0">{{ session.entry_logic_long or '' }}</textarea>
+        <small class="text-muted d-block mt-1">
+          Python boolean expression. Triggered when <code>True</code> on a candle → enter long.
+        </small>
       </div>
     </div>
-
-    <!-- Analysis trigger (only if logic saved and indicators exist) -->
-    {% if session.entry_mode == 'path_a' and session.entry_logic %}
-    <div class="card caf-card mt-3">
-      <div class="card-header caf-card-header">
-        <i class="bi bi-bar-chart-steps me-2 text-success"></i>Run Winner/Loser Analysis
-      </div>
-      <div class="card-body">
-        <p class="text-muted small mb-3">
-          Evaluates your entry condition on all historical candles, classifies each entry
-          as winner or loser (based on return after N bars), then computes Cohen's D
-          for every indicator to find the most discriminative filters.
-        </p>
-        <form method="post" action="{{ url_for('entry_logic.run_analysis', session_id=session.id) }}">
-          <div class="row g-2 mb-3">
-            <div class="col-sm-6">
-              <label class="form-label small">Hold period (bars)</label>
-              <input type="number" name="hold_bars" class="form-control caf-input form-control-sm"
-                     value="10" min="3" max="100">
-              <small class="text-muted">How long to hold after entry signal</small>
-            </div>
-            <div class="col-sm-6">
-              <label class="form-label small">Min profit to call it a win (%)</label>
-              <input type="number" name="min_profit_pct" class="form-control caf-input form-control-sm"
-                     value="0.5" min="0" max="10" step="0.1">
-            </div>
-          </div>
-          <button type="submit" class="btn btn-success"
-                  {% if task and task.status == 'running' %}disabled{% endif %}>
-            <i class="bi bi-play-fill me-1"></i>
-            {% if task and task.status == 'running' %}Analyzing…{% else %}Analyze Entry Points{% endif %}
-          </button>
-        </form>
-
-        <!-- Progress -->
-        <div class="mt-3"
-             {% if task and task.status == 'running' %}
-             hx-get="{{ url_for('entry_logic.status', session_id=session.id) }}"
-             hx-trigger="every 3s"
-             hx-swap="innerHTML"
-             {% endif %}>
-          {% include "partials/task_progress.html" %}
-        </div>
-
-        {% if task and task.status == 'done' %}
-        <a href="{{ url_for('entry_logic.analysis_results', session_id=session.id) }}"
-           class="btn btn-outline-success mt-2">
-          <i class="bi bi-bar-chart me-1"></i>View Analysis Results →
-        </a>
-        {% endif %}
-      </div>
-    </div>
-    {% endif %}
   </div>
 
-  <!-- Right column: Skip + reference -->
-  <div class="col-lg-5">
-    <!-- Skip to Path B -->
-    <div class="card caf-card mb-3">
-      <div class="card-header caf-card-header">
-        <i class="bi bi-skip-forward-fill me-2 text-info"></i>Skip — Use Path B
+  <!-- Short Entry -->
+  <div class="col-lg-6">
+    <div class="card caf-card h-100">
+      <div class="card-header caf-card-header d-flex align-items-center gap-2">
+        <span class="badge bg-danger">SHORT</span>
+        <span class="text-light">Short Entry Condition</span>
+        <small class="text-muted ms-auto">leave blank to skip shorts</small>
       </div>
       <div class="card-body">
-        <p class="small text-muted mb-3">
-          Skip defining entry logic. Optuna will search freely across all indicator combinations.
-          This is the original workflow.
-        </p>
-        <form method="post" action="{{ url_for('entry_logic.skip_to_path_b', session_id=session.id) }}">
-          <button type="submit" class="btn btn-outline-info">
-            <i class="bi bi-arrow-right me-1"></i>Skip to Indicators (Path B)
-          </button>
-        </form>
+        <textarea name="entry_logic_short" class="form-control caf-input font-monospace"
+                  rows="8"
+                  placeholder="RSI_14 > 65 and EMA_20 < EMA_50 and MACD_hist < 0">{{ session.entry_logic_short or '' }}</textarea>
+        <small class="text-muted d-block mt-1">
+          Python boolean expression. Triggered when <code>True</code> on a candle → enter short.
+        </small>
       </div>
     </div>
+  </div>
 
-    <!-- Available indicators reference -->
-    <div class="card caf-card">
-      <div class="card-header caf-card-header">
-        <i class="bi bi-list-ul me-2"></i>Available Column Names
-      </div>
-      <div class="card-body p-0">
-        <div style="max-height: 320px; overflow-y: auto;">
-          <table class="table table-sm caf-table mb-0">
-            <thead class="sticky-top">
-              <tr><th>Column</th><th>Description</th></tr>
-            </thead>
-            <tbody>
-              {% set indicator_ref = [
-                ('RSI_14', 'RSI (14 period)'),
-                ('RSI_7', 'RSI (7 period)'),
-                ('RSI_21', 'RSI (21 period)'),
-                ('MACD', 'MACD line'),
-                ('MACD_signal', 'MACD signal'),
-                ('MACD_hist', 'MACD histogram'),
-                ('EMA_8', 'EMA 8'),
-                ('EMA_20', 'EMA 20'),
-                ('EMA_50', 'EMA 50'),
-                ('EMA_200', 'EMA 200'),
-                ('SMA_20', 'SMA 20'),
-                ('SMA_50', 'SMA 50'),
-                ('ADX_14', 'ADX strength'),
-                ('BB_pct_20', 'Bollinger %B'),
-                ('BB_width_20', 'Bollinger Width'),
-                ('ATR_14', 'ATR'),
-                ('STOCH_K', 'Stochastic K'),
-                ('STOCH_D', 'Stochastic D'),
-                ('STOCHRSI_K', 'StochRSI K'),
-                ('MFI_14', 'Money Flow Index'),
-                ('WILLR_14', "Williams %R"),
-                ('ROC_10', 'Rate of Change'),
-                ('CMF_20', 'Chaikin MF'),
-                ('OBV', 'On-Balance Volume'),
-                ('volume_ratio', 'Vol / Vol MA'),
-                ('SUPERT_dir', 'Supertrend dir (+1/-1)'),
-                ('ema_20_50_cross', 'EMA 20/50 cross (+1/-1)'),
-                ('ema_50_200_cross', 'EMA 50/200 cross'),
-                ('body_pct', 'Candle body %'),
-                ('upper_wick', 'Upper wick %'),
-                ('lower_wick', 'Lower wick %'),
-                ('close_pct_change', 'Close % change'),
-                ('AROON_up', 'Aroon Up'),
-                ('AROON_down', 'Aroon Down'),
-                ('AO', 'Awesome Oscillator'),
-                ('close', 'Close price'),
-                ('volume', 'Volume'),
-              ] %}
-              {% for col, desc in indicator_ref %}
-              <tr>
-                <td><code class="text-warning small">{{ col }}</code></td>
-                <td class="text-muted small">{{ desc }}</td>
-              </tr>
-              {% endfor %}
-            </tbody>
-          </table>
+</div>
+
+<div class="d-flex align-items-center gap-3 mt-3">
+  <button type="submit" class="btn btn-warning">
+    <i class="bi bi-funnel me-1"></i>Save Entry Logic (Path A)
+  </button>
+  <span class="text-muted small">or</span>
+  <button type="button" class="btn btn-outline-info"
+          onclick="document.getElementById('skip-form').submit()">
+    <i class="bi bi-arrow-right me-1"></i>Skip — Use Path B
+  </button>
+</div>
+</form>
+
+<form id="skip-form" method="post"
+      action="{{ url_for('entry_logic.skip_to_path_b', session_id=session.id) }}"
+      style="display:none"></form>
+
+<!-- Analysis trigger -->
+{% if session.entry_mode == 'path_a' and session.entry_logic %}
+<div class="card caf-card mt-4">
+  <div class="card-header caf-card-header">
+    <i class="bi bi-bar-chart-steps me-2 text-success"></i>Run Winner/Loser Analysis
+  </div>
+  <div class="card-body">
+    <p class="text-muted small mb-3">
+      Evaluates each entry condition on historical candles, classifies each entry as winner
+      or loser (based on return after N bars), then uses Cohen's D + Random Forest to rank
+      indicators by discriminative power.
+    </p>
+    <form method="post" action="{{ url_for('entry_logic.run_analysis', session_id=session.id) }}">
+      <div class="row g-2 mb-3">
+        <div class="col-sm-6">
+          <label class="form-label small">Hold period (bars)</label>
+          <input type="number" name="hold_bars" class="form-control caf-input form-control-sm"
+                 value="10" min="3" max="100">
+          <small class="text-muted">How long to hold after entry signal</small>
+        </div>
+        <div class="col-sm-6">
+          <label class="form-label small">Min profit to call it a win (%)</label>
+          <input type="number" name="min_profit_pct" class="form-control caf-input form-control-sm"
+                 value="0.5" min="0" max="10" step="0.1">
         </div>
       </div>
+      <button type="submit" class="btn btn-success"
+              {% if task and task.status == 'running' %}disabled{% endif %}>
+        <i class="bi bi-play-fill me-1"></i>
+        {% if task and task.status == 'running' %}Analyzing…{% else %}Analyze Entry Points{% endif %}
+      </button>
+    </form>
+
+    <div class="mt-3"
+         {% if task and task.status == 'running' %}
+         hx-get="{{ url_for('entry_logic.status', session_id=session.id) }}"
+         hx-trigger="every 3s"
+         hx-swap="innerHTML"
+         {% endif %}>
+      {% include "partials/task_progress.html" %}
+    </div>
+
+    {% if task and task.status == 'done' %}
+    <a href="{{ url_for('entry_logic.analysis_results', session_id=session.id) }}"
+       class="btn btn-outline-success mt-2">
+      <i class="bi bi-bar-chart me-1"></i>View Analysis Results →
+    </a>
+    {% endif %}
+  </div>
+</div>
+{% endif %}
+
+<!-- Indicator reference -->
+<div class="card caf-card mt-4">
+  <div class="card-header caf-card-header">
+    <i class="bi bi-list-ul me-2"></i>Available Column Names
+    <small class="text-muted ms-2">use in your boolean expressions above</small>
+  </div>
+  <div class="card-body p-0">
+    <div style="max-height: 280px; overflow-y: auto;">
+      <table class="table table-sm caf-table mb-0">
+        <thead class="sticky-top">
+          <tr><th>Column</th><th>Description</th><th>Column</th><th>Description</th></tr>
+        </thead>
+        <tbody>
+          {% set indicator_ref = [
+            ('RSI_14', 'RSI 14'), ('RSI_7', 'RSI 7'), ('RSI_21', 'RSI 21'),
+            ('MACD', 'MACD line'), ('MACD_signal', 'MACD signal'), ('MACD_hist', 'MACD histogram'),
+            ('EMA_8', 'EMA 8'), ('EMA_20', 'EMA 20'), ('EMA_50', 'EMA 50'), ('EMA_200', 'EMA 200'),
+            ('SMA_20', 'SMA 20'), ('SMA_50', 'SMA 50'),
+            ('ADX_14', 'ADX strength'), ('DMP_14', 'DI+'), ('DMN_14', 'DI-'),
+            ('BB_pct_20', 'Bollinger %B'), ('BB_width_20', 'BB Width'),
+            ('ATR_14', 'ATR 14'), ('NATR_14', 'Normalized ATR'),
+            ('STOCH_K', 'Stochastic K'), ('STOCH_D', 'Stochastic D'),
+            ('STOCHRSI_K', 'StochRSI K'), ('MFI_14', 'Money Flow Index'),
+            ('WILLR_14', "Williams %R"), ('ROC_10', 'Rate of Change'),
+            ('CMF_20', 'Chaikin MF'), ('OBV', 'On-Balance Volume'),
+            ('CCI_20', 'CCI 20'), ('AO', 'Awesome Oscillator'),
+            ('volume_ratio', 'Vol / Vol MA'), ('HV_20', 'Historical Volatility 20'),
+            ('SUPERT_dir', 'Supertrend dir'), ('PSAR_dir', 'PSAR direction'),
+            ('ema_20_50_cross', 'EMA 20/50 cross'), ('ema_50_200_cross', 'EMA 50/200 cross'),
+            ('BB_squeeze', 'Bollinger squeeze'), ('AROON_up', 'Aroon Up'), ('AROON_down', 'Aroon Down'),
+            ('body_pct', 'Candle body %'), ('upper_wick', 'Upper wick %'), ('lower_wick', 'Lower wick %'),
+            ('close_pct_change', 'Close % change'), ('close', 'Close price'), ('volume', 'Volume'),
+          ] %}
+          {% for i in range(0, indicator_ref|length, 2) %}
+          <tr>
+            <td><code class="text-warning small">{{ indicator_ref[i][0] }}</code></td>
+            <td class="text-muted small">{{ indicator_ref[i][1] }}</td>
+            {% if i+1 < indicator_ref|length %}
+            <td><code class="text-warning small">{{ indicator_ref[i+1][0] }}</code></td>
+            <td class="text-muted small">{{ indicator_ref[i+1][1] }}</td>
+            {% else %}
+            <td></td><td></td>
+            {% endif %}
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
     </div>
   </div>
 </div>
+
 {% endblock %}

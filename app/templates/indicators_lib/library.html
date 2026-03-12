@@ -1,0 +1,164 @@
+{% extends "base.html" %}
+{% block title %}Indicators Library{% endblock %}
+
+{% block content %}
+<div class="mt-3 mb-4 d-flex align-items-center justify-content-between">
+  <div>
+    <h2 class="mb-0"><i class="bi bi-collection-fill me-2 text-primary"></i>Indicators Library</h2>
+    <small class="text-muted">All {{ total }} built-in indicators available in every session. Use column names in entry logic expressions.</small>
+  </div>
+</div>
+
+<!-- Category filter tabs -->
+<ul class="nav nav-tabs mb-4" id="catTabs">
+  <li class="nav-item">
+    <a class="nav-link active" href="#" data-cat="all">
+      All <span class="badge bg-secondary ms-1">{{ total }}</span>
+    </a>
+  </li>
+  {% for cat in categories %}
+  <li class="nav-item">
+    <a class="nav-link" href="#" data-cat="{{ cat }}">
+      {{ cat }}
+      <span class="badge bg-secondary ms-1">{{ by_category[cat]|length }}</span>
+    </a>
+  </li>
+  {% endfor %}
+</ul>
+
+<!-- Search -->
+<div class="mb-3">
+  <input type="text" id="indSearch" class="form-control caf-input" placeholder="Search indicators…" style="max-width:320px">
+</div>
+
+<!-- Tables per category -->
+{% for cat in categories %}
+<div class="cat-section mb-4" data-cat="{{ cat }}">
+  <div class="card caf-card">
+    <div class="card-header caf-card-header">
+      {% if cat == 'Trend' %}<i class="bi bi-trending-up me-2 text-primary"></i>
+      {% elif cat == 'Momentum' %}<i class="bi bi-speedometer me-2 text-warning"></i>
+      {% elif cat == 'Volume' %}<i class="bi bi-bar-chart-fill me-2 text-info"></i>
+      {% elif cat == 'Volatility' %}<i class="bi bi-activity me-2 text-danger"></i>
+      {% elif cat == 'Structure' %}<i class="bi bi-grid me-2 text-secondary"></i>
+      {% elif cat == 'Patterns' %}<i class="bi bi-grid-3x3-gap me-2 text-success"></i>
+      {% elif cat == 'Regime' %}<i class="bi bi-diagram-3 me-2 text-purple"></i>
+      {% endif %}
+      {{ cat }} Indicators
+      <span class="badge bg-secondary ms-2">{{ by_category[cat]|length }}</span>
+    </div>
+    <div class="table-responsive">
+      <table class="table table-sm caf-table mb-0">
+        <thead>
+          <tr>
+            <th style="width:200px">Column Name</th>
+            <th>Description</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for ind in by_category[cat] %}
+          <tr class="ind-row" data-name="{{ ind.col|lower }} {{ ind.desc|lower }}">
+            <td>
+              <code class="text-warning">{{ ind.col }}</code>
+            </td>
+            <td class="text-muted small">{{ ind.desc }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+{% endfor %}
+
+<!-- How to add custom indicators -->
+<div class="card caf-card border-primary border-opacity-25 mt-2">
+  <div class="card-header caf-card-header">
+    <i class="bi bi-plus-circle me-2 text-primary"></i>Adding Custom Indicators
+  </div>
+  <div class="card-body small text-muted">
+    <div class="row g-3">
+      <div class="col-md-6">
+        <strong class="text-light">How the indicator pipeline works</strong>
+        <p class="mt-1">
+          All indicators are computed in <code>app/strategies/base.py</code> inside the
+          <code>add_indicators(df)</code> function. The output DataFrame columns are what
+          you reference in entry logic and the Algo Finder.
+        </p>
+        <p>
+          To add a custom indicator, open <code>app/strategies/base.py</code> and add your
+          pandas/ta computation. Return a new column on the DataFrame. It will automatically
+          be available in:
+        </p>
+        <ul>
+          <li>Entry Logic conditions</li>
+          <li>IC Analysis (correlation with future returns)</li>
+          <li>Algo Finder search space</li>
+        </ul>
+      </div>
+      <div class="col-md-6">
+        <strong class="text-light">Example: Adding a custom indicator</strong>
+        <pre class="mt-1 p-2 rounded small" style="background:#1a1a2e;color:#e0e0ff">
+# In app/strategies/base.py, inside add_indicators():
+
+# Custom: 3-bar momentum
+df['MY_MOM_3'] = df['close'].pct_change(3) * 100
+
+# Custom: EMA ratio
+df['EMA_RATIO'] = df['EMA_8'] / df['EMA_50']
+
+# Custom: volume spike flag
+vol_ma = df['volume'].rolling(20).mean()
+df['VOL_SPIKE'] = (df['volume'] > vol_ma * 2).astype(int)
+        </pre>
+      </div>
+    </div>
+  </div>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function() {
+  const tabs = document.querySelectorAll('#catTabs .nav-link');
+  const sections = document.querySelectorAll('.cat-section');
+  const search = document.getElementById('indSearch');
+
+  function filterCat(cat) {
+    tabs.forEach(t => t.classList.toggle('active', t.dataset.cat === cat));
+    sections.forEach(s => {
+      s.style.display = (cat === 'all' || s.dataset.cat === cat) ? '' : 'none';
+    });
+  }
+
+  tabs.forEach(t => t.addEventListener('click', e => {
+    e.preventDefault();
+    filterCat(t.dataset.cat);
+    search.value = '';
+    document.querySelectorAll('.ind-row').forEach(r => r.style.display = '');
+  }));
+
+  search.addEventListener('input', function() {
+    const q = this.value.toLowerCase().trim();
+    if (!q) {
+      sections.forEach(s => s.style.display = '');
+      document.querySelectorAll('.ind-row').forEach(r => r.style.display = '');
+      return;
+    }
+    // Show all sections when searching
+    sections.forEach(s => s.style.display = '');
+    document.querySelectorAll('.ind-row').forEach(r => {
+      r.style.display = r.dataset.name.includes(q) ? '' : 'none';
+    });
+    // Hide empty sections
+    sections.forEach(s => {
+      const visible = s.querySelectorAll('.ind-row:not([style*="none"])').length;
+      if (visible === 0) s.style.display = 'none';
+    });
+    // Reset tab highlight
+    tabs.forEach(t => t.classList.remove('active'));
+  });
+})();
+</script>
+{% endblock %}
