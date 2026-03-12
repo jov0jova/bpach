@@ -1,7 +1,10 @@
 from flask import Blueprint, current_app, flash, redirect, render_template, request, url_for
 
 from ..tasks.runner import submit_task
-from ..services.algofinder import run_algofinder, run_algofinder_path_a
+from ..services.algofinder import (
+    INDICATOR_CATALOG, DEFAULT_INDICATORS,
+    run_algofinder, run_algofinder_path_a,
+)
 from ..utils import db
 
 bp = Blueprint("algofinder", __name__)
@@ -25,7 +28,9 @@ def algofinder_view(session_id):
                            session=session,
                            task=task,
                            results=results,
-                           path_a_result=path_a_result)
+                           path_a_result=path_a_result,
+                           indicator_catalog=INDICATOR_CATALOG,
+                           default_indicators=DEFAULT_INDICATORS)
 
 
 @bp.route("/<session_id>/run", methods=["POST"])
@@ -37,6 +42,10 @@ def run(session_id):
 
     n_trials = int(request.form.get("n_trials", current_app.config["OPTUNA_TRIALS"]))
     mode = request.form.get("mode", session.get("entry_mode", "path_b"))
+
+    # Indicator selection (Path B only; checkboxes send a list of keys)
+    selected_indicators = request.form.getlist("indicators") or DEFAULT_INDICATORS
+
     config = {
         "initial_capital": float(request.form.get("initial_capital",
                                                     current_app.config["DEFAULT_INITIAL_CAPITAL"])),
@@ -45,6 +54,7 @@ def run(session_id):
         "position_size": current_app.config["DEFAULT_POSITION_SIZE"],
         "wfo_splits": 3,
         "wfo_train_ratio": 0.7,
+        "selected_indicators": selected_indicators,
     }
 
     if mode == "path_a" and session.get("entry_logic"):

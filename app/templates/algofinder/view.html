@@ -68,26 +68,86 @@
                    value="10000" step="1000">
           </div>
 
+          {% if session.entry_mode == 'path_a' and path_a_result.get('top_indicators') %}
           <div class="mb-3 p-2 bg-dark rounded border small text-muted">
-            <div class="fw-semibold text-light mb-1">
-              {% if session.entry_mode == 'path_a' and path_a_result.get('top_indicators') %}
-              Path A Filter Space
-              {% else %}
-              Path B Search Space
-              {% endif %}
-            </div>
-            {% if session.entry_mode == 'path_a' and path_a_result.get('top_indicators') %}
-              {% for ind in path_a_result.top_indicators[:5] %}
-              <div><code class="text-warning">{{ ind.col }}</code> {{ ind.operator }} ? — |D|={{ ind.abs_d }}</div>
-              {% endfor %}
-              <div class="mt-1 text-muted">Exit: RSI threshold, period</div>
-            {% else %}
-              <div>RSI period: 7–21 · RSI entry: 20–50</div>
-              <div>EMA fast: 8–30 · EMA slow: 20–100</div>
-              <div>ADX: 15–35 · BB %B, Volume ratio</div>
-              <div>MACD histogram, Supertrend</div>
-            {% endif %}
+            <div class="fw-semibold text-light mb-1">Path A Filter Space</div>
+            {% for ind in path_a_result.top_indicators[:5] %}
+            <div><code class="text-warning">{{ ind.col }}</code> {{ ind.operator }} ? — |D|={{ ind.abs_d }}</div>
+            {% endfor %}
+            <div class="mt-1 text-muted">Exit: RSI threshold, period</div>
           </div>
+          {% else %}
+          {# ── Indicator selector (Path B) ──────────────────────────────── #}
+          <div class="mb-3">
+            <div class="d-flex justify-content-between align-items-center mb-1">
+              <label class="form-label small mb-0">Search Space Indicators</label>
+              <div class="d-flex gap-2">
+                <button type="button" class="btn btn-link btn-sm p-0 text-muted"
+                        onclick="setAllIndicators(true)" style="font-size:.75rem">All</button>
+                <span class="text-muted" style="font-size:.75rem">|</span>
+                <button type="button" class="btn btn-link btn-sm p-0 text-muted"
+                        onclick="setAllIndicators(false)" style="font-size:.75rem">None</button>
+              </div>
+            </div>
+
+            {# Group indicators by category #}
+            {% set categories = [] %}
+            {% for key, spec in indicator_catalog.items() %}
+              {% if spec.cat not in categories %}{% set _ = categories.append(spec.cat) %}{% endif %}
+            {% endfor %}
+
+            <div class="accordion accordion-flush" id="indAccordion"
+                 style="background:transparent">
+              {% for cat in categories %}
+              {% set cat_id = cat | lower | replace(' ', '_') %}
+              <div class="accordion-item border-0 mb-1"
+                   style="background:transparent">
+                <h2 class="accordion-header" id="hd-{{ cat_id }}">
+                  <button class="accordion-button collapsed py-1 px-2 small fw-semibold"
+                          style="background:#161b22;color:#c9d1d9;border:1px solid #30363d;
+                                 border-radius:4px;font-size:.75rem"
+                          type="button" data-bs-toggle="collapse"
+                          data-bs-target="#acc-{{ cat_id }}"
+                          aria-expanded="false">
+                    {{ cat }}
+                    <span class="ms-auto badge bg-secondary cat-count" data-cat="{{ cat }}"></span>
+                  </button>
+                </h2>
+                <div id="acc-{{ cat_id }}" class="accordion-collapse collapse"
+                     data-bs-parent="#indAccordion">
+                  <div class="accordion-body py-1 px-2"
+                       style="background:#0d1117;border:1px solid #30363d;
+                              border-top:none;border-radius:0 0 4px 4px">
+                    {% for key, spec in indicator_catalog.items() %}
+                    {% if spec.cat == cat %}
+                    <div class="form-check form-check-sm mb-1">
+                      <input class="form-check-input ind-checkbox"
+                             type="checkbox" name="indicators"
+                             value="{{ key }}"
+                             id="ind_{{ key }}"
+                             data-cat="{{ cat }}"
+                             {% if key in default_indicators %}checked{% endif %}>
+                      <label class="form-check-label small text-muted"
+                             for="ind_{{ key }}"
+                             style="font-size:.75rem;line-height:1.3">
+                        {{ spec.label }}
+                      </label>
+                    </div>
+                    {% endif %}
+                    {% endfor %}
+                  </div>
+                </div>
+              </div>
+              {% endfor %}
+            </div>
+            <div class="mt-1 text-muted" style="font-size:.7rem">
+              <i class="bi bi-info-circle me-1"></i>
+              Each indicator uses a <strong>fixed logical condition</strong>
+              (e.g. RSI &lt; threshold, Price &gt; EMA).
+              Optuna decides which to activate and tunes the thresholds.
+            </div>
+          </div>
+          {% endif %}
 
           <button type="submit" class="btn btn-danger w-100"
                   {% if task and task.status == 'running' %}disabled{% endif %}>
@@ -200,4 +260,28 @@
     {% endif %}
   </div>
 </div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function updateCatCounts() {
+  document.querySelectorAll('.cat-count').forEach(badge => {
+    const cat = badge.dataset.cat;
+    const boxes = document.querySelectorAll(`.ind-checkbox[data-cat="${cat}"]`);
+    const checked = [...boxes].filter(b => b.checked).length;
+    badge.textContent = `${checked}/${boxes.length}`;
+    badge.className = `ms-auto badge cat-count ${checked > 0 ? 'bg-info text-dark' : 'bg-secondary'}`;
+  });
+}
+function setAllIndicators(state) {
+  document.querySelectorAll('.ind-checkbox').forEach(b => b.checked = state);
+  updateCatCounts();
+}
+document.addEventListener('DOMContentLoaded', () => {
+  updateCatCounts();
+  document.querySelectorAll('.ind-checkbox').forEach(b =>
+    b.addEventListener('change', updateCatCounts)
+  );
+});
+</script>
 {% endblock %}
