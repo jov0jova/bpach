@@ -404,14 +404,17 @@ def _supertrend(high: pd.Series, low: pd.Series, close: pd.Series,
             final_lb = lb_i if (lb_i > prev_st or c_prev < prev_st) else prev_st
             final_ub = ub_i if (ub_i < prev_st or c_prev > prev_st) else prev_st
 
-        if np.isnan(prev_st) or prev_st == final_ub:
+        # Use direction flag instead of float equality (prev_st == final_ub)
+        # to determine which band was being tracked — cleaner and avoids
+        # any floating-point equality edge cases.
+        if dir_arr[i - 1] <= 0:  # was bearish (tracking upper band) or uninitialized
             if c_curr > final_ub:
                 st_arr[i]  = final_lb
                 dir_arr[i] = 1
             else:
                 st_arr[i]  = final_ub
                 dir_arr[i] = -1
-        else:
+        else:                     # was bullish (tracking lower band)
             if c_curr < final_lb:
                 st_arr[i]  = final_ub
                 dir_arr[i] = -1
