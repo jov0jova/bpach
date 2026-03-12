@@ -135,8 +135,8 @@ class BaseStrategy:
             df["ICH_senkou_a"] = ichi.ichimoku_a()
             df["ICH_senkou_b"] = ichi.ichimoku_b()
             # Cloud position: price vs cloud
-            df["ICH_above_cloud"] = ((close > df["ICH_senkou_a"]) & (close > df["ICH_senkou_b"])).astype(int)
-            df["ICH_below_cloud"] = ((close < df["ICH_senkou_a"]) & (close < df["ICH_senkou_b"])).astype(int)
+            df["ICH_above_cloud"] = ((close.values > df["ICH_senkou_a"].values) & (close.values > df["ICH_senkou_b"].values)).astype(int)
+            df["ICH_below_cloud"] = ((close.values < df["ICH_senkou_a"].values) & (close.values < df["ICH_senkou_b"].values)).astype(int)
 
             # Aroon
             aroon = tr.AroonIndicator(high, low, window=25, fillna=False)
@@ -150,7 +150,7 @@ class BaseStrategy:
             df["PSAR_down"] = psar_obj.psar_down()
             # PSAR direction: +1 = bullish (price above PSAR), -1 = bearish
             psar_val = psar_obj.psar()
-            df["PSAR_dir"] = ((close > psar_val).astype(int) * 2 - 1)
+            df["PSAR_dir"] = ((close.values > psar_val.values).astype(int) * 2 - 1)
 
             # ── Supertrend (manual — ATR-based trend filter) ──────────────────
             for period, mult in [(10, 3.0), (14, 2.0)]:
