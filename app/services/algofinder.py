@@ -84,10 +84,23 @@ INDICATOR_CATALOG = OrderedDict([
                      "label": "Supertrend Bullish",     "cat": "Trend", "default": True}),
     ("psar",        {"col": "PSAR_dir",  "type": "eq1",
                      "label": "Parabolic SAR Bullish",  "cat": "Trend"}),
-    ("aroon_bull",  {"col": ("AROON_up", "AROON_down"), "type": "col_gt_col",
-                     "label": "Aroon Up > Aroon Down",  "cat": "Trend"}),
-    ("adx_min",     {"col": "ADX_14",    "type": "gt",  "range": (15, 35),
-                     "label": "ADX(14) trend strength", "cat": "Trend", "default": True}),
+    ("aroon_bull",       {"col": ("AROON_up", "AROON_down"),  "type": "col_gt_col",
+                          "label": "Aroon Up > Aroon Down",         "cat": "Trend"}),
+    ("adx_min",          {"col": "ADX_14",    "type": "gt",  "range": (15, 35),
+                          "label": "ADX(14) trend strength",        "cat": "Trend", "default": True}),
+    # Band vs MA: both are in price units → direct comparison is meaningful
+    # KC_lower > EMA_200: even the floor of recent volatility is above the long-term MA = very strong uptrend
+    ("kelt_above_ema200",{"col": ("KC_lower", "EMA_200"),   "type": "col_gt_col",
+                          "label": "Keltner Lower > EMA(200)",      "cat": "Trend"}),
+    # KC_lower > EMA_50: consolidation floor above medium-term MA = uptrend holding
+    ("kelt_above_ema50", {"col": ("KC_lower", "EMA_50"),    "type": "col_gt_col",
+                          "label": "Keltner Lower > EMA(50)",       "cat": "Trend"}),
+    # EMA_50 > EMA_200: classic golden cross (fixed periods, no parameter search needed)
+    ("golden_cross",     {"col": ("EMA_50", "EMA_200"),     "type": "col_gt_col",
+                          "label": "EMA(50) > EMA(200) golden cross","cat": "Trend"}),
+    # BB_lower > EMA_50: the lower Bollinger band is above the 50 MA — price compressing above trend
+    ("bb_lower_ema50",   {"col": ("BB_lower_20", "EMA_50"), "type": "col_gt_col",
+                          "label": "BB Lower Band > EMA(50)",       "cat": "Trend"}),
 
     # ── Momentum: directional strength ──────────────────────────────────
     ("macd_hist",  {"col": "MACD_hist",  "type": "gt_zero",
