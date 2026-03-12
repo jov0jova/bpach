@@ -11,22 +11,38 @@ Two modes
 
 Indicator search design (Path B)
 ─────────────────────────────────
-  Each indicator in INDICATOR_CATALOG has a FIXED, semantically correct
-  condition type.  Optuna never mixes incompatible units (e.g. ATR vs close).
-  Instead it searches:
-    • use_<key>   — whether to include this indicator at all (0/1 toggle)
-    • thresh_<key>— the threshold value (for lt / gt condition types)
+  INDICATOR_CATALOG keys are the actual df column names (RSI_14, EMA_50, …).
+  Each entry has a semantic "type" that controls exactly how the column is
+  used in a condition — Optuna never mixes incompatible units.
+
+  Per-indicator Optuna parameters
+  ────────────────────────────────
+    use_<col>    0/1 toggle — should this indicator be active this trial?
+    thresh_<col> float      — threshold for "lt" and "gt" types only
 
   Condition types
   ───────────────
-    lt          col < threshold          (oscillators in oversold territory)
-    gt          col > threshold          (trend strength, volume ratio, ROC)
-    gt_zero     col > 0                  (MACD hist, AO, CMF, OBV trend sign)
-    eq1         col == 1                 (Supertrend, PSAR: direction flags)
-    price_gt    close > col              (price above a moving average)
-    price_lt    close < col              (price below a band — oversold)
-    ema_cross   EMA_fast > EMA_slow      (parameterised EMA alignment)
-    col_gt_col  col[0] > col[1]          (Aroon up > down)
+    osc         col < threshold     oscillators (RSI, Stoch, MFI, CCI …)
+                                    lower value = oversold = bullish entry
+    gt          col > threshold     strength/ratio indicators (ADX, volume…)
+    sign        col > 0             momentum sign (MACD hist, AO, CMF …)
+    flag        col == 1            binary direction flags (Supertrend, PSAR)
+    ma          close > col         price above a moving average (EMA_X)
+    band_lower  close < col         price below lower band = oversold bounce
+    band_pct    col < threshold     normalised band position (BB %B)
+    lt          col < threshold     generic upper-bound filter (NATR, BB wid)
+
+  Cross-conditions — derived automatically, no hardcoded pairs
+  ─────────────────────────────────────────────────────────────
+  When multiple indicators of the same price-unit type are active,
+  CatalogStrategy derives additional conditions at runtime:
+
+    ≥2 active MAs   → EMA_shorter > EMA_longer  (MA alignment / stack)
+    band_lower + MA  → band_lower > longest_MA   (floor above trend line)
+
+  This means selecting EMA_20 + EMA_200 automatically implies a golden-cross
+  filter — but only when Optuna decides to activate *both*.  No fixed pairs
+  are baked in; the relationships emerge from the combination chosen.
 """
 import logging
 import os
@@ -51,97 +67,80 @@ optuna.logging.set_verbosity(optuna.logging.WARNING)
 
 
 # ── Indicator catalogue ───────────────────────────────────────────────────────
-# Every entry maps a short key → condition spec.
+# Keys ARE the df column names.  The system infers cross-conditions at runtime
+# from the combination of active indicators — no hardcoded pairs here.
 # "default": True  →  pre-selected when the user hasn't customised anything.
 
 INDICATOR_CATALOG = OrderedDict([
-    # ── Oscillators: oversold entry conditions ──────────────────────────
-    ("rsi_14",    {"col": "RSI_14",      "type": "lt",  "range": (20, 50),
-                   "label": "RSI(14) oversold",         "cat": "Oscillators", "default": True}),
-    ("rsi_7",     {"col": "RSI_7",       "type": "lt",  "range": (15, 45),
-                   "label": "RSI(7) oversold",          "cat": "Oscillators"}),
-    ("rsi_21",    {"col": "RSI_21",      "type": "lt",  "range": (25, 55),
-                   "label": "RSI(21) oversold",         "cat": "Oscillators"}),
-    ("stoch_k",   {"col": "STOCH_K",     "type": "lt",  "range": (10, 40),
-                   "label": "Stoch %K oversold",        "cat": "Oscillators"}),
-    ("stochrsi",  {"col": "STOCHRSI_K",  "type": "lt",  "range": (5, 30),
-                   "label": "StochRSI %K oversold",     "cat": "Oscillators"}),
-    ("willr",     {"col": "WILLR_14",    "type": "lt",  "range": (-80, -20),
-                   "label": "Williams %R oversold",     "cat": "Oscillators"}),
-    ("mfi_os",    {"col": "MFI_14",      "type": "lt",  "range": (20, 50),
-                   "label": "MFI(14) oversold",         "cat": "Oscillators"}),
-    ("cci",       {"col": "CCI_20",      "type": "lt",  "range": (-150, -50),
-                   "label": "CCI(20) oversold",         "cat": "Oscillators"}),
+    # ── Oscillators ──────────────────────────────────────────────────────
+    # type "osc": col < threshold  (lower value = oversold = bullish entry)
+    ("RSI_7",       {"type": "osc", "range": (15, 50), "label": "RSI(7)",        "cat": "Oscillators"}),
+    ("RSI_14",      {"type": "osc", "range": (20, 50), "label": "RSI(14)",       "cat": "Oscillators", "default": True}),
+    ("RSI_21",      {"type": "osc", "range": (25, 55), "label": "RSI(21)",       "cat": "Oscillators"}),
+    ("STOCH_K",     {"type": "osc", "range": (10, 40), "label": "Stoch %K",      "cat": "Oscillators"}),
+    ("STOCHRSI_K",  {"type": "osc", "range": (5,  30), "label": "StochRSI %K",   "cat": "Oscillators"}),
+    ("WILLR_14",    {"type": "osc", "range": (-80,-20), "label": "Williams %R",  "cat": "Oscillators"}),
+    ("MFI_14",      {"type": "osc", "range": (20, 50), "label": "MFI(14)",       "cat": "Oscillators"}),
+    ("CCI_20",      {"type": "osc", "range": (-150,-50),"label": "CCI(20)",      "cat": "Oscillators"}),
 
-    # ── Trend: direction and alignment ──────────────────────────────────
-    ("ema_cross",  {"col": ("EMA_fast", "EMA_slow"), "type": "ema_cross",
-                    "label": "EMA fast > EMA slow",     "cat": "Trend", "default": True}),
-    ("close_ema50", {"col": "EMA_50",   "type": "price_gt",
-                     "label": "Price > EMA(50)",        "cat": "Trend"}),
-    ("close_ema200",{"col": "EMA_200",  "type": "price_gt",
-                     "label": "Price > EMA(200)",       "cat": "Trend"}),
-    ("supertrend",  {"col": "SUPERT_dir","type": "eq1",
-                     "label": "Supertrend Bullish",     "cat": "Trend", "default": True}),
-    ("psar",        {"col": "PSAR_dir",  "type": "eq1",
-                     "label": "Parabolic SAR Bullish",  "cat": "Trend"}),
-    ("aroon_bull",       {"col": ("AROON_up", "AROON_down"),  "type": "col_gt_col",
-                          "label": "Aroon Up > Aroon Down",         "cat": "Trend"}),
-    ("adx_min",          {"col": "ADX_14",    "type": "gt",  "range": (15, 35),
-                          "label": "ADX(14) trend strength",        "cat": "Trend", "default": True}),
-    # Band vs MA: both are in price units → direct comparison is meaningful
-    # KC_lower > EMA_200: even the floor of recent volatility is above the long-term MA = very strong uptrend
-    ("kelt_above_ema200",{"col": ("KC_lower", "EMA_200"),   "type": "col_gt_col",
-                          "label": "Keltner Lower > EMA(200)",      "cat": "Trend"}),
-    # KC_lower > EMA_50: consolidation floor above medium-term MA = uptrend holding
-    ("kelt_above_ema50", {"col": ("KC_lower", "EMA_50"),    "type": "col_gt_col",
-                          "label": "Keltner Lower > EMA(50)",       "cat": "Trend"}),
-    # EMA_50 > EMA_200: classic golden cross (fixed periods, no parameter search needed)
-    ("golden_cross",     {"col": ("EMA_50", "EMA_200"),     "type": "col_gt_col",
-                          "label": "EMA(50) > EMA(200) golden cross","cat": "Trend"}),
-    # BB_lower > EMA_50: the lower Bollinger band is above the 50 MA — price compressing above trend
-    ("bb_lower_ema50",   {"col": ("BB_lower_20", "EMA_50"), "type": "col_gt_col",
-                          "label": "BB Lower Band > EMA(50)",       "cat": "Trend"}),
+    # ── Trend MAs ────────────────────────────────────────────────────────
+    # type "ma": close > col
+    # Cross-conditions derived automatically at runtime (no hardcoded pairs):
+    #   ≥2 active MAs   → shorter_period_EMA > longer_period_EMA  (MA alignment)
+    #   band_lower + MA  → band_lower > longest_active_MA          (floor above trend)
+    ("EMA_8",       {"type": "ma", "label": "EMA(8)",   "cat": "Trend"}),
+    ("EMA_13",      {"type": "ma", "label": "EMA(13)",  "cat": "Trend"}),
+    ("EMA_20",      {"type": "ma", "label": "EMA(20)",  "cat": "Trend", "default": True}),
+    ("EMA_50",      {"type": "ma", "label": "EMA(50)",  "cat": "Trend", "default": True}),
+    ("EMA_100",     {"type": "ma", "label": "EMA(100)", "cat": "Trend"}),
+    ("EMA_200",     {"type": "ma", "label": "EMA(200)", "cat": "Trend"}),
 
-    # ── Momentum: directional strength ──────────────────────────────────
-    ("macd_hist",  {"col": "MACD_hist",  "type": "gt_zero",
-                    "label": "MACD Histogram > 0",      "cat": "Momentum", "default": True}),
-    ("roc",        {"col": "ROC_10",     "type": "gt",  "range": (-1.0, 3.0),
-                    "label": "ROC(10) > threshold %",   "cat": "Momentum"}),
-    ("ao",         {"col": "AO",         "type": "gt_zero",
-                    "label": "Awesome Oscillator > 0",  "cat": "Momentum"}),
+    # ── Trend direction flags ─────────────────────────────────────────────
+    # type "flag": col == 1  (direction is +1 = bullish)
+    ("SUPERT_dir",  {"type": "flag", "label": "Supertrend bullish", "cat": "Trend", "default": True}),
+    ("PSAR_dir",    {"type": "flag", "label": "PSAR bullish",       "cat": "Trend"}),
+    ("OBV_trend",   {"type": "flag", "label": "OBV trend bullish",  "cat": "Volume"}),
 
-    # ── Volatility & Bands ───────────────────────────────────────────────
-    ("bb_pct",    {"col": "BB_pct_20",   "type": "lt",  "range": (0.1, 0.4),
-                   "label": "BB %B near lower band",    "cat": "Volatility", "default": True}),
-    ("bb_width",  {"col": "BB_width_20", "type": "gt",  "range": (0.005, 0.05),
-                   "label": "BB Width > min (not squeezed)", "cat": "Volatility"}),
-    ("kelt_lower",{"col": "KC_lower",    "type": "price_lt",
-                   "label": "Price < Keltner Lower (oversold)", "cat": "Volatility"}),
-    ("natr",      {"col": "NATR_14",     "type": "lt",  "range": (0.5, 4.0),
-                   "label": "NATR(14) < max % (low vol entry)", "cat": "Volatility"}),
+    # ── Trend strength ────────────────────────────────────────────────────
+    # type "gt": col > threshold
+    ("ADX_14",      {"type": "gt", "range": (15, 35), "label": "ADX(14) strength",  "cat": "Trend", "default": True}),
+    ("AROON_up",    {"type": "gt", "range": (50, 90), "label": "Aroon Up strength", "cat": "Trend"}),
 
-    # ── Volume: participation filters ────────────────────────────────────
-    ("vol_ratio", {"col": "volume_ratio","type": "gt",  "range": (0.5, 2.5),
-                   "label": "Volume Ratio above average","cat": "Volume", "default": True}),
-    ("cmf",       {"col": "CMF_20",      "type": "gt_zero",
-                   "label": "Chaikin MF > 0 (buying pressure)", "cat": "Volume"}),
-    ("obv_trend", {"col": "OBV_trend",   "type": "eq1",
-                   "label": "OBV Trend Bullish",        "cat": "Volume"}),
-    ("mfi_bull",  {"col": "MFI_14",      "type": "gt",  "range": (40, 65),
-                   "label": "MFI(14) > threshold (money flowing in)", "cat": "Volume"}),
+    # ── Momentum sign ────────────────────────────────────────────────────
+    # type "sign": col > 0  (positive momentum direction)
+    ("MACD_hist",   {"type": "sign", "label": "MACD Histogram > 0",    "cat": "Momentum", "default": True}),
+    ("AO",          {"type": "sign", "label": "Awesome Oscillator > 0","cat": "Momentum"}),
+    ("CMF_20",      {"type": "sign", "label": "Chaikin Money Flow > 0","cat": "Momentum"}),
+
+    # ── Momentum threshold ────────────────────────────────────────────────
+    ("ROC_10",      {"type": "gt", "range": (-1, 3), "label": "ROC(10) > threshold %", "cat": "Momentum"}),
+
+    # ── Bands ─────────────────────────────────────────────────────────────
+    # type "band_lower": close < col  (oversold below the lower band)
+    #   + when any MA is active → col > longest_active_MA  (floor above trend line)
+    # type "band_pct": col < threshold  (normalised band position)
+    ("KC_lower",    {"type": "band_lower", "label": "Keltner Lower (oversold)",  "cat": "Bands"}),
+    ("BB_lower_20", {"type": "band_lower", "label": "BB Lower(20) (oversold)",   "cat": "Bands"}),
+    ("BB_pct_20",   {"type": "band_pct", "range": (0.1, 0.4), "label": "BB %B(20) near lower", "cat": "Bands", "default": True}),
+    ("BB_width_20", {"type": "gt", "range": (0.005, 0.05), "label": "BB Width(20) > min",       "cat": "Bands"}),
+
+    # ── Volatility ────────────────────────────────────────────────────────
+    # type "lt": col < threshold  (avoid high-volatility entries)
+    ("NATR_14",     {"type": "lt", "range": (0.5, 4.0), "label": "NATR(14) < max %", "cat": "Volatility"}),
+
+    # ── Volume ────────────────────────────────────────────────────────────
+    ("volume_ratio",{"type": "gt", "range": (0.5, 2.5), "label": "Volume ratio > avg", "cat": "Volume", "default": True}),
 ])
 
 DEFAULT_INDICATORS = [k for k, v in INDICATOR_CATALOG.items() if v.get("default")]
 
-# HTF filters: always available in addition to whatever primary TF indicators are chosen
-_HTF_SEARCH = {
-    "use_htf_trend":      (0, 1),
-    "use_htf_supertrend": (0, 1),
-    "htf_rsi_max":        (30, 70),
-    "use_htf_rsi_filter": (0, 1),
-    "htf_adx_min":        (15, 40),
-    "use_htf_adx_filter": (0, 1),
-}
+# EMA period embedded in column names — used to sort active MAs for cross-conditions
+def _ma_period(col: str) -> int:
+    """Extract numeric period from EMA_XX column name."""
+    try:
+        return int(col.split("_")[1])
+    except (IndexError, ValueError):
+        return 0
 
 
 # ── Strategy class ────────────────────────────────────────────────────────────
@@ -149,10 +148,14 @@ _HTF_SEARCH = {
 class CatalogStrategy(BaseStrategy):
     """
     Strategy built dynamically from a user-selected subset of INDICATOR_CATALOG.
-    Optuna controls:
-      • use_<key>   — whether the indicator is active this trial
-      • thresh_<key>— the threshold value (for lt / gt types)
-      • ema_fast / ema_slow — EMA periods (only when ema_cross is selected)
+
+    Optuna controls per-indicator:
+      • use_<col>    0/1 — activate this indicator for this trial
+      • thresh_<col> float — threshold (osc / gt / lt / band_pct types only)
+
+    Cross-conditions are derived automatically — no hardcoded pairs:
+      ≥2 active MAs    → EMA_shorter > EMA_longer   (MA alignment)
+      band_lower + MA  → band_lower  > longest_MA   (floor above trend line)
     """
     name = "CatalogStrategy"
 
@@ -164,53 +167,55 @@ class CatalogStrategy(BaseStrategy):
         p = self.params
         cond = pd.Series(True, index=df.index)
 
-        for key in self._selected:
-            if not p.get(f"use_{key}", 0):
+        active_mas   = []   # (period_int, col) for active "ma" entries
+        active_bands = []   # col names for active "band_lower" entries
+
+        for col in self._selected:
+            if not p.get(f"use_{col}", 0):
                 continue
-            spec = INDICATOR_CATALOG.get(key)
-            if spec is None:
+            spec = INDICATOR_CATALOG.get(col)
+            if spec is None or col not in df.columns:
                 continue
 
-            col  = spec["col"]
             kind = spec["type"]
 
-            if kind == "lt":
-                if col in df.columns:
-                    cond &= df[col] < p[f"thresh_{key}"]
+            if kind == "osc" or kind == "band_pct" or kind == "lt":
+                cond &= df[col] < p[f"thresh_{col}"]
 
             elif kind == "gt":
-                if col in df.columns:
-                    cond &= df[col] > p[f"thresh_{key}"]
+                cond &= df[col] > p[f"thresh_{col}"]
 
-            elif kind == "gt_zero":
-                if col in df.columns:
-                    cond &= df[col] > 0
+            elif kind == "sign":
+                cond &= df[col] > 0
 
-            elif kind == "eq1":
-                if col in df.columns:
-                    cond &= df[col] == 1
+            elif kind == "flag":
+                cond &= df[col] == 1
 
-            elif kind == "price_gt":
-                # close > moving average column
-                if col in df.columns:
-                    cond &= df["close"] > df[col]
+            elif kind == "ma":
+                cond &= df["close"] > df[col]
+                active_mas.append((_ma_period(col), col))
 
-            elif kind == "price_lt":
-                # close < band column (oversold below lower band)
-                if col in df.columns:
-                    cond &= df["close"] < df[col]
+            elif kind == "band_lower":
+                cond &= df["close"] < df[col]
+                active_bands.append(col)
 
-            elif kind == "ema_cross":
-                # EMA_fast > EMA_slow (both periods are Optuna params)
-                fc = f"EMA_{int(p.get('ema_fast', 20))}"
-                sc = f"EMA_{int(p.get('ema_slow', 50))}"
-                if fc in df.columns and sc in df.columns:
-                    cond &= df[fc] > df[sc]
+        # ── Derived cross-conditions (price-unit indicators) ──────────────
+        # MA alignment: if ≥2 MAs active, require shorter-period > longer-period
+        active_mas.sort()                       # ascending = fastest first
+        if len(active_mas) >= 2:
+            fast_col = active_mas[0][1]         # shortest period (fastest MA)
+            slow_col = active_mas[-1][1]        # longest period  (slowest MA)
+            if fast_col in df.columns and slow_col in df.columns:
+                cond &= df[fast_col] > df[slow_col]
 
-            elif kind == "col_gt_col":
-                c1, c2 = col
-                if c1 in df.columns and c2 in df.columns:
-                    cond &= df[c1] > df[c2]
+        # Band-vs-MA: if any lower-band + any MA are active,
+        # require band_lower > longest_MA (floor is above the trend line)
+        if active_bands and active_mas:
+            anchor_ma = active_mas[-1][1]       # most conservative = longest period
+            if anchor_ma in df.columns:
+                for band_col in active_bands:
+                    if band_col in df.columns:
+                        cond &= df[band_col] > df[anchor_ma]
 
         # ── HTF filters ──────────────────────────────────────────────────
         htf_trend_cols = [c for c in df.columns if c.endswith("_trend_dir")]
@@ -248,31 +253,33 @@ class CatalogStrategy(BaseStrategy):
 
 def _objective(trial, dfs: list, config: dict,
                selected: list, has_htf: bool = False) -> float:
-    """Optuna objective: build params from catalog selection, return OOS Sharpe."""
+    """
+    Optuna objective.
+
+    For each selected indicator:
+      • suggest use_<col>    (0/1 — active or not this trial)
+      • suggest thresh_<col> (float — only for osc/gt/lt/band_pct types)
+
+    Cross-conditions between price-scale indicators (MA alignment, band vs MA)
+    are derived automatically inside CatalogStrategy — no extra parameters needed.
+    """
     params = {}
 
-    # EMA cross needs fast/slow period parameters
-    if "ema_cross" in selected:
-        params["ema_fast"] = trial.suggest_int("ema_fast", 8, 30)
-        params["ema_slow"] = trial.suggest_int("ema_slow", 20, 100)
-        if params["ema_fast"] >= params["ema_slow"]:
-            return -999.0
-
-    # Exit parameters (always tuned)
+    # Exit parameters (always tuned regardless of indicator selection)
     params["rsi_exit_period"] = trial.suggest_categorical("rsi_exit_period", [7, 14, 21])
     params["rsi_exit_min"]    = trial.suggest_float("rsi_exit_min", 60, 85)
 
-    # Per-indicator: on/off toggle + threshold (when applicable)
-    for key in selected:
-        spec = INDICATOR_CATALOG.get(key)
+    # Per-indicator parameters
+    for col in selected:
+        spec = INDICATOR_CATALOG.get(col)
         if spec is None:
             continue
-        params[f"use_{key}"] = trial.suggest_categorical(f"use_{key}", [0, 1])
-        if spec["type"] in ("lt", "gt") and "range" in spec:
+        params[f"use_{col}"] = trial.suggest_categorical(f"use_{col}", [0, 1])
+        if spec["type"] in ("osc", "gt", "lt", "band_pct") and "range" in spec:
             lo, hi = spec["range"]
-            params[f"thresh_{key}"] = trial.suggest_float(f"thresh_{key}", lo, hi)
+            params[f"thresh_{col}"] = trial.suggest_float(f"thresh_{col}", lo, hi)
 
-    # HTF filters (only when HTF data present)
+    # HTF filters (only when HTF data is present)
     if has_htf:
         params["use_htf_trend"]      = trial.suggest_categorical("use_htf_trend", [0, 1])
         params["use_htf_supertrend"] = trial.suggest_categorical("use_htf_supertrend", [0, 1])
@@ -476,30 +483,42 @@ def run_algofinder(task_id: str, db_path: Path, session_id: str,
 # ── Rule description ──────────────────────────────────────────────────────────
 
 def _describe_rules(params: dict, selected: list) -> str:
-    """Convert params dict to a human-readable rule description."""
-    _COND_TMPL = {
-        "lt":        lambda spec, p, k: f"{spec['col']} < {p[f'thresh_{k}']:.4g}",
-        "gt":        lambda spec, p, k: f"{spec['col']} > {p[f'thresh_{k}']:.4g}",
-        "gt_zero":   lambda spec, p, k: f"{spec['col']} > 0",
-        "eq1":       lambda spec, p, k: f"{spec['col']} = Bullish (1)",
-        "price_gt":  lambda spec, p, k: f"close > {spec['col']}",
-        "price_lt":  lambda spec, p, k: f"close < {spec['col']} (oversold)",
-        "ema_cross": lambda spec, p, k: (
-            f"EMA({p.get('ema_fast', '?')}) > EMA({p.get('ema_slow', '?')})"
-        ),
-        "col_gt_col":lambda spec, p, k: f"{spec['col'][0]} > {spec['col'][1]}",
-    }
-
+    """Convert params dict to human-readable rule description."""
     lines = ["ENTRY CONDITIONS:"]
-    for key in selected:
-        if not params.get(f"use_{key}", 0):
+    active_mas   = []
+    active_bands = []
+
+    for col in selected:
+        if not params.get(f"use_{col}", 0):
             continue
-        spec = INDICATOR_CATALOG.get(key)
+        spec = INDICATOR_CATALOG.get(col)
         if not spec:
             continue
-        tmpl = _COND_TMPL.get(spec["type"])
-        if tmpl:
-            lines.append(f"  • {tmpl(spec, params, key)}")
+        kind = spec["type"]
+
+        if kind in ("osc", "band_pct", "lt"):
+            lines.append(f"  • {col} < {params[f'thresh_{col}']:.4g}")
+        elif kind == "gt":
+            lines.append(f"  • {col} > {params[f'thresh_{col}']:.4g}")
+        elif kind == "sign":
+            lines.append(f"  • {col} > 0")
+        elif kind == "flag":
+            lines.append(f"  • {col} = Bullish")
+        elif kind == "ma":
+            lines.append(f"  • close > {col}")
+            active_mas.append((_ma_period(col), col))
+        elif kind == "band_lower":
+            lines.append(f"  • close < {col}  (oversold below lower band)")
+            active_bands.append(col)
+
+    # Derived cross-conditions
+    active_mas.sort()
+    if len(active_mas) >= 2:
+        lines.append(f"  • {active_mas[0][1]} > {active_mas[-1][1]}  [MA alignment — derived]")
+    if active_bands and active_mas:
+        anchor = active_mas[-1][1]
+        for band_col in active_bands:
+            lines.append(f"  • {band_col} > {anchor}  [floor above trend — derived]")
 
     # HTF filters
     if params.get("use_htf_trend"):
