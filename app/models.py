@@ -14,6 +14,18 @@ def _conn(db_path: str | Path) -> duckdb.DuckDBPyConnection:
     return duckdb.connect(str(db_path))
 
 
+from contextlib import contextmanager
+
+@contextmanager
+def _db(db_path: str | Path):
+    """Context manager that opens a DuckDB connection and closes it on exit."""
+    con = duckdb.connect(str(db_path))
+    try:
+        yield con
+    finally:
+        con.close()
+
+
 def init_db(db_path: str | Path) -> None:
     con = _conn(db_path)
     con.execute("""
@@ -222,22 +234,36 @@ def delete_session(db_path, session_id: str) -> None:
 # ── Pairs ────────────────────────────────────────────────────────────────────
 
 def upsert_pairs(db_path, session_id: str, pairs: list) -> None:
+    if not pairs:
+        return
     con = _conn(db_path)
     now = datetime.now(timezone.utc)
+    # Fetch existing symbols in one query to avoid N+1 round-trips
+    existing_rows = con.execute(
+        "SELECT symbol, id FROM pairs WHERE session_id=?", [session_id]
+    ).fetchall()
+    existing = {row[0]: row[1] for row in existing_rows}
+
+    updates, inserts = [], []
     for p in pairs:
-        existing = con.execute("SELECT id FROM pairs WHERE session_id=? AND symbol=?",
-                               [session_id, p["symbol"]]).fetchone()
-        if existing:
-            con.execute("""
-                UPDATE pairs SET active=?, volume_24h=? WHERE session_id=? AND symbol=?
-            """, [p.get("active", True), p.get("volume_24h", 0), session_id, p["symbol"]])
+        sym = p["symbol"]
+        if sym in existing:
+            updates.append([p.get("active", True), p.get("volume_24h", 0), session_id, sym])
         else:
-            con.execute("INSERT INTO pairs VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", [
-                str(uuid.uuid4()), session_id, p["symbol"],
+            inserts.append([
+                str(uuid.uuid4()), session_id, sym,
                 p.get("base_asset", ""), p.get("quote_asset", "USDT"),
                 p.get("active", True), p.get("volume_24h", 0),
                 False, None, None, 0, now
             ])
+
+    if updates:
+        con.executemany(
+            "UPDATE pairs SET active=?, volume_24h=? WHERE session_id=? AND symbol=?",
+            updates,
+        )
+    if inserts:
+        con.executemany("INSERT INTO pairs VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", inserts)
     con.close()
 
 
@@ -286,21 +312,26 @@ def create_task(db_path, session_id: str, task_type: str) -> str:
 def update_task(db_path, task_id: str, status: str = None, progress: int = None,
                 total: int = None, message: str = None, result: dict = None,
                 error: str = None) -> None:
-    con = _conn(db_path)
+    fields, values = [], []
     now = datetime.now(timezone.utc)
     if status is not None:
-        con.execute("UPDATE tasks SET status=?, updated_at=? WHERE id=?", [status, now, task_id])
+        fields.append("status=?"); values.append(status)
     if progress is not None:
-        con.execute("UPDATE tasks SET progress=?, updated_at=? WHERE id=?", [progress, now, task_id])
+        fields.append("progress=?"); values.append(progress)
     if total is not None:
-        con.execute("UPDATE tasks SET total=?, updated_at=? WHERE id=?", [total, now, task_id])
+        fields.append("total=?"); values.append(total)
     if message is not None:
-        con.execute("UPDATE tasks SET message=?, updated_at=? WHERE id=?", [message, now, task_id])
+        fields.append("message=?"); values.append(message)
     if result is not None:
-        con.execute("UPDATE tasks SET result=?, updated_at=? WHERE id=?",
-                    [json.dumps(result), now, task_id])
+        fields.append("result=?"); values.append(json.dumps(result))
     if error is not None:
-        con.execute("UPDATE tasks SET error=?, updated_at=? WHERE id=?", [error, now, task_id])
+        fields.append("error=?"); values.append(error)
+    if not fields:
+        return
+    fields.append("updated_at=?"); values.append(now)
+    values.append(task_id)
+    con = _conn(db_path)
+    con.execute(f"UPDATE tasks SET {', '.join(fields)} WHERE id=?", values)
     con.close()
 
 
@@ -362,14 +393,18 @@ def create_backtest_run(db_path, session_id: str, strategy_code: str, params: di
 
 
 def update_backtest_run(db_path, run_id: str, **kwargs) -> None:
-    con = _conn(db_path)
-    now = datetime.now(timezone.utc)
-    allowed = ["status","total_trades","win_rate","profit_factor","sharpe_ratio",
+    allowed = {"status","total_trades","win_rate","profit_factor","sharpe_ratio",
                "max_drawdown","total_return","avg_trade_duration",
-               "oos_return","oos_win_rate","error_msg","completed_at"]
+               "oos_return","oos_win_rate","error_msg","completed_at"}
+    fields, values = [], []
     for k, v in kwargs.items():
         if k in allowed:
-            con.execute(f"UPDATE backtest_runs SET {k}=? WHERE id=?", [v, run_id])
+            fields.append(f"{k}=?"); values.append(v)
+    if not fields:
+        return
+    values.append(run_id)
+    con = _conn(db_path)
+    con.execute(f"UPDATE backtest_runs SET {', '.join(fields)} WHERE id=?", values)
     con.close()
 
 
