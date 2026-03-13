@@ -752,6 +752,22 @@ def _add_extended_indicators(df: pd.DataFrame,
             dest = f"{prefix}{col}" if prefix else col
             _add(dest, result[col])
 
+    def _swv_dot(series: pd.Series, w: np.ndarray) -> pd.Series:
+        """Weighted MA via a single batch matrix multiply (no per-window Python call).
+        w must be 1-D with the same length as the rolling window, ordered oldest→newest.
+        """
+        from numpy.lib.stride_tricks import sliding_window_view
+        wlen = len(w)
+        arr  = series.values.astype(float)
+        if len(arr) < wlen:
+            return pd.Series(np.full(len(arr), np.nan), index=series.index)
+        wins  = sliding_window_view(arr, wlen)          # (n_windows, wlen)
+        valid = ~np.any(np.isnan(wins), axis=1)
+        out   = np.full(len(arr), np.nan)
+        if valid.any():
+            out[wlen - 1:][valid] = wins[valid] @ w     # batch dot product
+        return pd.Series(out, index=series.index)
+
     # ── Price-derived (no library needed) ─────────────────────────────────────
     _add("TYPPRICE",  (high + low + close) / 3)
     _add("MEDPRICE",  (high + low) / 2)
@@ -779,9 +795,9 @@ def _add_extended_indicators(df: pd.DataFrame,
     _add("APO_12_26", _safe(lambda: close.ewm(span=12, adjust=False).mean() -
                                     close.ewm(span=26, adjust=False).mean()))
 
-    # BETA (rolling regression of close returns vs their own lagged MA)
+    # BETA (rolling correlation of close returns vs their own 5-bar MA of returns)
     _add("BETA_5", _safe(lambda: close.pct_change().rolling(5).corr(
-        close.pct_change().rolling(5).mean().rolling(5).apply(lambda x: x[-1], raw=True)
+        close.pct_change().rolling(5).mean()  # .apply(last) was a no-op
     )))
 
     # CORREL (rolling Pearson correlation close vs volume)
@@ -797,7 +813,19 @@ def _add_extended_indicators(df: pd.DataFrame,
         _add(f"PCT_RANK_{p}", _safe(lambda p=p: close.rolling(p).rank(pct=True)))
     _add("SKEW_20",   _safe(lambda: close.rolling(20).skew()))
     _add("KURT_20",   _safe(lambda: close.rolling(20).kurt()))
-    _add("MAD_20",    _safe(lambda: close.rolling(20).apply(lambda x: np.mean(np.abs(x - x.mean())), raw=True)))
+    def _mad_20(series: pd.Series, n: int = 20) -> pd.Series:
+        from numpy.lib.stride_tricks import sliding_window_view
+        arr  = series.values.astype(float)
+        if len(arr) < n:
+            return pd.Series(np.full(len(arr), np.nan), index=series.index)
+        wins  = sliding_window_view(arr, n)
+        valid = ~np.any(np.isnan(wins), axis=1)
+        out   = np.full(len(arr), np.nan)
+        if valid.any():
+            w = wins[valid]
+            out[n - 1:][valid] = np.abs(w - w.mean(axis=1, keepdims=True)).mean(axis=1)
+        return pd.Series(out, index=series.index)
+    _add("MAD_20", _safe(lambda: _mad_20(close, 20)))
     # rolling.corr(shift) is the vectorized equivalent of autocorr(lag) over window
     _add("AUTOCORR_1", _safe(lambda: close.rolling(20).corr(close.shift(1))))
     _add("AUTOCORR_2", _safe(lambda: close.rolling(20).corr(close.shift(2))))
@@ -909,20 +937,13 @@ def _add_extended_indicators(df: pd.DataFrame,
         rsi3  = 100 - 100 / (1 + up3 / dn3.replace(0, float("nan")))
 
         # Streak: count consecutive up/down days
-        direction = np.sign(delta.fillna(0))
-        streak_arr = np.zeros(len(direction))
-        s = 0.0
-        dir_arr = direction.values
-        for i in range(1, len(dir_arr)):
-            d = dir_arr[i]
-            if d > 0:
-                s = s + 1 if s > 0 else 1.0
-            elif d < 0:
-                s = s - 1 if s < 0 else -1.0
-            else:
-                s = 0.0
-            streak_arr[i] = s
-        streak = pd.Series(streak_arr, index=close.index)
+        direction  = np.sign(delta.fillna(0))
+        prev_d     = direction.shift(1).fillna(0)
+        # A run ends (and a new one starts) whenever direction changes or hits 0
+        new_run    = (direction != prev_d) | (prev_d == 0) | (direction == 0)
+        run_id     = new_run.cumsum()
+        pos        = direction.groupby(run_id).cumcount() + 1  # 1-indexed position in run
+        streak     = (direction * pos).where(direction != 0, 0)
         su = streak.clip(lower=0)
         sd = (-streak).clip(lower=0)
         su_m = su.rolling(2).mean()
@@ -1009,8 +1030,9 @@ def _add_extended_indicators(df: pd.DataFrame,
 
     # ── Center of Gravity ─────────────────────────────────────────────────────
     def _cg_osc(close: pd.Series, n: int = 10) -> pd.Series:
-        weights = np.arange(n, 0, -1, dtype=float)
-        num = close.rolling(n).apply(lambda x: np.sum(x * weights[:len(x)]), raw=True)
+        # weights[0]=n (oldest bar), weights[-1]=1 (newest) — batch dot product
+        w   = np.arange(n, 0, -1, dtype=float)
+        num = _swv_dot(close, w)                         # vectorised
         den = close.rolling(n).sum().replace(0, float("nan"))
         return -num / den
 
@@ -1093,14 +1115,15 @@ def _add_extended_indicators(df: pd.DataFrame,
 
     # ── NVI / PVI (Negative/Positive Volume Index) ────────────────────────────
     def _nvi_pvi(close: pd.Series, vol: pd.Series):
-        pct = close.pct_change().fillna(0).values
+        pct     = close.pct_change().fillna(0).values
         vol_chg = vol.diff().values
-        n = len(close)
-        nvi_arr = np.full(n, 1000.0)
-        pvi_arr = np.full(n, 1000.0)
-        for i in range(1, n):
-            nvi_arr[i] = nvi_arr[i - 1] * (1 + pct[i]) if vol_chg[i] < 0 else nvi_arr[i - 1]
-            pvi_arr[i] = pvi_arr[i - 1] * (1 + pct[i]) if vol_chg[i] > 0 else pvi_arr[i - 1]
+        # NVI multiplies by (1+pct) only when volume falls; PVI only when volume rises.
+        # Both are cumulative products of conditional multipliers — fully vectorised.
+        nvi_factors = np.where(vol_chg < 0, 1.0 + pct, 1.0)
+        pvi_factors = np.where(vol_chg > 0, 1.0 + pct, 1.0)
+        nvi_factors[0] = 1.0;  pvi_factors[0] = 1.0   # start value = 1000
+        nvi_arr = 1000.0 * np.cumprod(nvi_factors)
+        pvi_arr = 1000.0 * np.cumprod(pvi_factors)
         return pd.Series(nvi_arr, index=close.index), pd.Series(pvi_arr, index=close.index)
 
     nvi, pvi = _safe(lambda: _nvi_pvi(close, vol)) or (None, None)
@@ -1217,11 +1240,10 @@ def _add_extended_indicators(df: pd.DataFrame,
 
     # ── Coppock Curve (pure pandas) ───────────────────────────────────────────
     if "COPPOCK" not in df.columns and "COPPOCK" not in new_cols:
-        _add("COPPOCK", _safe(lambda: (
-            (close.pct_change(14) + close.pct_change(11)) * 100
-        ).rolling(10).apply(
-            lambda x: np.average(x, weights=np.arange(1, len(x) + 1)), raw=True
-        )))
+        _coppock_base = (close.pct_change(14) + close.pct_change(11)) * 100
+        _coppock_w    = np.arange(1, 11, dtype=float)   # weights 1..10 (oldest→newest)
+        _coppock_w   /= _coppock_w.sum()
+        _add("COPPOCK", _safe(lambda: _swv_dot(_coppock_base, _coppock_w)))
 
     # ── Triangular MA ─────────────────────────────────────────────────────────
     def _trima(close: pd.Series, n: int) -> pd.Series:
@@ -1244,9 +1266,9 @@ def _add_extended_indicators(df: pd.DataFrame,
     def _alma(close: pd.Series, n: int = 9, sigma: float = 6.0, offset: float = 0.85) -> pd.Series:
         m = offset * (n - 1)
         s = n / sigma
-        weights = np.exp(-((np.arange(n) - m) ** 2) / (2 * s * s))
-        weights /= weights.sum()
-        return close.rolling(n).apply(lambda x: np.dot(x, weights[::-1]), raw=True)
+        w = np.exp(-((np.arange(n) - m) ** 2) / (2 * s * s))
+        w /= w.sum()
+        return _swv_dot(close, w[::-1])   # [::-1] preserves original oldest→newest convention
 
     _add("ALMA_9",  _safe(lambda: _alma(close, 9)))
     _add("ALMA_21", _safe(lambda: _alma(close, 21)))
@@ -1291,16 +1313,13 @@ def _add_extended_indicators(df: pd.DataFrame,
 
     # ── Fibonacci Weighted MA ─────────────────────────────────────────────────
     def _fwma(close: pd.Series, n: int = 10) -> pd.Series:
-        def _fib_weights(k):
-            a, b = 1, 1
-            fibs = [a]
-            for _ in range(k - 1):
-                a, b = b, a + b
-                fibs.append(a)
-            w = np.array(fibs, dtype=float)
-            return w / w.sum()
-        w = _fib_weights(n)
-        return close.rolling(n).apply(lambda x: np.dot(x, w[::-1]), raw=True)
+        a, b = 1, 1
+        fibs  = [a]
+        for _ in range(n - 1):
+            a, b = b, a + b
+            fibs.append(a)
+        w = np.array(fibs, dtype=float);  w /= w.sum()
+        return _swv_dot(close, w[::-1])
 
     _add("FWMA_10", _safe(lambda: _fwma(close, 10)))
 
@@ -1403,17 +1422,15 @@ def _add_extended_indicators(df: pd.DataFrame,
     # ── Pascal Weighted MA ────────────────────────────────────────────────────
     def _pwma(close: pd.Series, n: int = 10) -> pd.Series:
         from math import comb
-        weights = np.array([comb(n - 1, i) for i in range(n)], dtype=float)
-        weights /= weights.sum()
-        return close.rolling(n).apply(lambda x: np.dot(x, weights[::-1]), raw=True)
+        w = np.array([comb(n - 1, i) for i in range(n)], dtype=float);  w /= w.sum()
+        return _swv_dot(close, w[::-1])
 
     _add("PWMA_10", _safe(lambda: _pwma(close, 10)))
 
     # ── Symmetric Weighted MA ────────────────────────────────────────────────
     def _swma(close: pd.Series) -> pd.Series:
-        weights = np.array([1, 2, 2, 1], dtype=float)
-        weights /= weights.sum()
-        return close.rolling(4).apply(lambda x: np.dot(x, weights[::-1]), raw=True)
+        # weights [1,2,2,1]/6 — oldest first convention; no rolling.apply needed
+        return (close.shift(3) + 2*close.shift(2) + 2*close.shift(1) + close) / 6.0
 
     _add("SWMA", _safe(lambda: _swma(close)))
 

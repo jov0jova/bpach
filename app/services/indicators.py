@@ -41,7 +41,9 @@ logger = logging.getLogger(__name__)
 # Windows uses 'spawn' for new processes → Flask re-import → DuckDB lock crash.
 # Linux/macOS use 'fork' → safe to use processes.
 _USE_PROCESSES = sys.platform != "win32"
-_WORKERS = min(os.cpu_count() or 1, 16)
+# No artificial cap — use all logical CPUs. On Windows (threads) pandas/numpy
+# release the GIL for heavy ops so more threads = more throughput.
+_WORKERS = os.cpu_count() or 1
 
 
 # ── Worker function (module-level so ProcessPoolExecutor can pickle it) ───────
