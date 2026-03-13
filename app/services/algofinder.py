@@ -134,6 +134,238 @@ INDICATOR_CATALOG = OrderedDict([
 
 DEFAULT_INDICATORS = [k for k, v in INDICATOR_CATALOG.items() if v.get("default")]
 
+
+# ── Auto-classification ───────────────────────────────────────────────────────
+
+# Columns that are raw OHLCV, intermediate, or not meaningful standalone
+_SKIP_COLS: frozenset = frozenset({
+    "open", "high", "low", "close", "volume", "timestamp", "date",
+    "entry_signal", "exit_signal", "ema_20_50_cross", "ema_50_200_cross",
+    "ema_aligned_bull", "MACD", "MACD_signal", "STOCH_D", "STOCHRSI_D",
+    "PSAR_up", "PSAR_down",
+    "BB_upper_14", "BB_mid_14", "BB_upper_20", "BB_mid_20",
+    "KC_upper", "KC_middle", "DC_upper", "DC_middle",
+    "SUPERT_10_3", "SUPERT_14_2", "SUPERT_7_3", "SUPERT_20_2",
+    "SUPERT_dir_10_3", "SUPERT_dir_14_2", "SUPERT_dir_7_3", "SUPERT_dir_20_2",
+    "ACCB_UPPER", "ACCB_MID",
+    "DMP_7", "DMN_7", "DMP_14", "DMN_14", "DMP_21", "DMN_21",
+    "ADX_7", "ADX_21", "ATR_7", "ATR_20", "ATR_21", "NATR_7", "NATR_21",
+    "candle_body", "candle_range", "upper_wick", "lower_wick",
+    "TYPPRICE", "MEDPRICE", "WCLPRICE", "AVGPRICE", "TRANGE",
+    "MIDPOINT_14", "MIDPRICE_14", "MAX_14", "MIN_14", "SUM_14",
+    "BARS_SINCE_HIGH", "BARS_SINCE_LOW", "PRICE_RANGE_PCT",
+    "KST_signal", "PPO", "PPO_signal", "KDJ_D",
+    "ICH_tenkan", "ICH_kijun", "ICH_senkou_a", "ICH_senkou_b", "ICH_below_cloud",
+    "ALLIGATOR_JAW", "ALLIGATOR_TEETH", "ALLIGATOR_LIPS", "ALLIGATOR_BEAR",
+    "AROON_down", "VI_neg", "BEAR_POWER_13", "FRACTAL_BEAR",
+    "OBV", "OBV_EMA_12", "body_pct", "upper_wick_pct", "lower_wick_pct",
+    "PP", "R1", "R2", "S1", "S2", "PP_dist_pct",
+    "OBV_ZSCORE", "ROCR_10", "ROCR100_10", "APO_12_26", "ROCP_10",
+    "STDDEV_10", "STDDEV_20", "STDDEV_50", "VAR_10", "VAR_20", "VAR_50",
+    "SKEW_20", "KURT_20", "MAD_20", "MEDIAN_20",
+    "QUANTILE_75_20", "QUANTILE_25_20", "AUTOCORR_2",
+    "BETA_5", "CORREL_CV_14", "CORREL_HL_14", "TSF_14",
+    "LINREG_14", "LINREG_INTERCEPT_14", "LINREG_ANGLE_14",
+    "TREND_STR_14", "INERTIA_20", "DECAY", "LIN_DECAY_5",
+    "AMAT_fast", "SMI_signal", "QQE_LINE", "MACD_cross",
+    "HILO_HIGH", "HILO_LOW", "PSL_12", "QSTICK_8", "CFO_9", "CG_10",
+    "NVI", "PVI", "PVO_signal", "AR_14", "BR_14", "BRAR",
+    "volume_spike", "VOL_RATIO_14",
+    "DEMA_ext_9", "DEMA_ext_21", "TEMA_ext_9", "TEMA_ext_21",
+    "CDL_SPINNING_TOP", "CDL_DOJI", "CDL_BEAR_MARUBOZU",
+    "CDL_HANGING_MAN", "CDL_SHOOTING_STAR", "CDL_GRAVESTONE",
+    "CDL_DARK_CLOUD", "CDL_BEAR_ENGULFING", "CDL_BEAR_HARAMI",
+    "CDL_BULL_HARAMI", "CDL_TWEEZER_TOP",
+    "CDL_3_INSIDE_DOWN", "CDL_3_BLACK_CROWS", "CDL_EVENING_STAR",
+    "CDL_OUTSIDE_BAR", "CDL_INSIDE_BAR",
+    "HIGH_VOL_REGIME", "BB_SQUEEZE", "LL", "RSI_DIVERG",
+    "GMMA_S3", "GMMA_S5", "GMMA_S8", "GMMA_S10", "GMMA_S12", "GMMA_S15",
+    "GMMA_L30", "GMMA_L35", "GMMA_L40", "GMMA_L45", "GMMA_L50", "GMMA_L60",
+    "HH",
+})
+
+_FLAG_COLS: frozenset = frozenset({
+    "SUPERT_dir", "PSAR_dir", "OBV_trend", "GMMA_BULL", "ICH_above_cloud",
+    "HILO_dir", "PMAX_dir", "TTM_TREND_6", "ALLIGATOR_BULL", "FRACTAL_BULL",
+    "CDL_HAMMER", "CDL_INV_HAMMER", "CDL_BULL_ENGULFING", "CDL_MORNING_STAR",
+    "CDL_3_WHITE_SOLDIERS", "CDL_PIERCING", "CDL_DRAGONFLY", "CDL_TWEEZER_BOTTOM",
+    "CDL_3_INSIDE_UP", "CDL_BULL_MARUBOZU",
+})
+
+_SIGN_COLS: frozenset = frozenset({
+    "MACD_hist", "AO", "CMF_20", "KVO", "BOP", "PPO_hist", "AROON_osc",
+    "KST", "DPO_20", "STC", "FISHER", "SQUEEZE_HIST", "QQE_HIST",
+    "BULL_POWER_13", "EMA50_slope", "BIAS_6", "BIAS_14", "BIAS_26",
+    "close_vs_EMA_20", "close_vs_EMA_50", "close_vs_EMA_200",
+    "CLOSE_VS_VWAP", "LINREG_SLOPE_14", "LINREG_SLOPE_5",
+    "ZSCORE_10", "ZSCORE_20", "ZSCORE_50", "KDJ_J", "TSI_13_25",
+    "SMI", "COPPOCK", "NET_VOL", "AD", "FI_13", "EOM_14",
+    "close_pct_change", "MOM_10", "MOM_20", "PVT",
+    "AUTOCORR_1", "PCT_RANK_10", "PCT_RANK_20", "PCT_RANK_50",
+    "RVGI_14", "PVO", "TRIX_15",
+})
+
+_MA_PREFIXES = (
+    "EMA_", "SMA_", "WMA_", "TEMA_", "DEMA_", "HMA_", "ZLEMA_",
+    "TRIMA_", "ALMA_", "T3_", "VWMA_",
+)
+_MA_EXACT: frozenset = frozenset({
+    "KAMA", "VIDYA_14", "FWMA_10", "PWMA_10", "SWMA", "HWMA", "MCGD_14", "VWAP",
+})
+
+
+def _auto_cat(col: str) -> str:
+    cu = col.upper()
+    if any(x in cu for x in ("EMA", "SMA", "WMA", "TEMA", "DEMA", "HMA", "ZLEMA",
+                               "TRIMA", "ALMA", "T3_", "KAMA", "VWAP", "VWMA",
+                               "VIDYA", "FWMA", "PWMA", "SWMA", "HWMA", "MCGD",
+                               "ADX", "AROON", "SUPERT", "PSAR", "GMMA", "HILO",
+                               "PMAX", "VI_", "AROONOSC")):
+        return "Trend"
+    if any(x in cu for x in ("RSI", "STOCH", "MACD", "CCI", "MOM", "ROC", "AO",
+                               "DPO", "KST", "TRIX", "WILLR", "UO", "CMO", "CRSI",
+                               "KDJ", "TSI", "STC", "FISHER", "SMI", "QQE",
+                               "COPPOCK", "PPO", "RVGI")):
+        return "Momentum"
+    if any(x in cu for x in ("BB_", "KC_", "DC_", "ACCB")):
+        return "Bands"
+    if any(x in cu for x in ("ATR", "NATR", "HV_", "CHOP", "VHF", "UI_",
+                               "SQUEEZE", "VOL_RATIO", "STDDEV", "VAR_",
+                               "MASS_INDEX")):
+        return "Volatility"
+    if any(x in cu for x in ("OBV", "MFI", "CMF", "FI_", "EOM", "AD",
+                               "PVT", "NVI", "PVI", "KVO", "VOL", "VOLUME",
+                               "NET_VOL", "PVO", "BRAR", "AR_", "BR_")):
+        return "Volume"
+    if col.startswith("CDL_"):
+        return "Patterns"
+    if any(x in cu for x in ("ZSCORE", "PCT_RANK", "AUTOCORR", "LINREG",
+                               "INERTIA", "BIAS", "CORREL", "TREND_STR")):
+        return "Statistical"
+    if any(x in cu for x in ("CLOSE_VS", "CLOSE_PCT", "EMA50_SLOPE")):
+        return "Price Action"
+    return "Other"
+
+
+def _auto_classify(col: str) -> "dict | None":
+    """
+    Map any indicator column name to its catalog spec.
+    Returns None for columns that should be skipped (OHLCV, derived, etc.).
+    """
+    if col in _SKIP_COLS:
+        return None
+    # Skip HTF injected columns — they are handled separately
+    if col.startswith("HTF_"):
+        return None
+
+    cat = _auto_cat(col)
+
+    # Flags: binary bullish signal
+    if col in _FLAG_COLS or col.endswith("_dir") or col.endswith("_BULL"):
+        return {"type": "flag", "label": col, "cat": cat}
+
+    # Moving averages (price-scale, close > col)
+    for pfx in _MA_PREFIXES:
+        if col.startswith(pfx):
+            return {"type": "ma", "label": col, "cat": "Trend"}
+    if col in _MA_EXACT:
+        return {"type": "ma", "label": col, "cat": "Trend"}
+
+    # Sign indicators (col > 0 = bullish momentum direction)
+    if col in _SIGN_COLS:
+        return {"type": "sign", "label": col, "cat": cat}
+    if (col.startswith("BIAS_") or col.startswith("close_vs_")
+            or col == "CLOSE_VS_VWAP" or col.startswith("LINREG_SLOPE")
+            or col.startswith("ZSCORE_") or col.startswith("PCT_RANK_")
+            or col.startswith("ROC_") or col.startswith("MOM_")
+            or col.startswith("ROCP_")):
+        return {"type": "sign", "label": col, "cat": cat}
+
+    # Oscillators (col < threshold = oversold = bullish)
+    if col.startswith("RSI_"):
+        return {"type": "osc", "range": (20, 50), "label": col, "cat": "Momentum"}
+    if col.startswith("STOCH") or col.startswith("STOCHRSI"):
+        return {"type": "osc", "range": (5, 35), "label": col, "cat": "Momentum"}
+    if col == "WILLR_14":
+        return {"type": "osc", "range": (-80, -20), "label": col, "cat": "Momentum"}
+    if col.startswith("MFI_"):
+        return {"type": "osc", "range": (20, 50), "label": col, "cat": "Volume"}
+    if col.startswith("CCI_"):
+        return {"type": "osc", "range": (-150, -50), "label": col, "cat": "Momentum"}
+    if col in ("CMO_14", "CRSI", "RSX_14", "UO", "KDJ_K", "CHOP_14"):
+        return {"type": "osc", "range": (20, 55), "label": col, "cat": "Momentum"}
+
+    # Band lower (close < col = price at oversold band bottom)
+    if col in ("KC_lower", "BB_lower_20", "BB_lower_14", "DC_lower", "ACCB_LOWER"):
+        return {"type": "band_lower", "label": col, "cat": "Bands"}
+    if "lower" in col.lower() and any(x in col for x in ("BB", "KC", "DC", "ACCB")):
+        return {"type": "band_lower", "label": col, "cat": "Bands"}
+
+    # Band pct (col < threshold = near lower band)
+    if col.startswith("BB_pct_"):
+        return {"type": "band_pct", "range": (0.1, 0.4), "label": col, "cat": "Bands"}
+
+    # Volatility/width upper-limit (col < threshold = not too wide/volatile)
+    if col.startswith("NATR_"):
+        return {"type": "lt", "range": (0.5, 4.0), "label": col, "cat": "Volatility"}
+    if col.startswith("HV_"):
+        return {"type": "lt", "range": (10, 60), "label": col, "cat": "Volatility"}
+    if col in ("UI_14", "MASS_INDEX"):
+        return {"type": "lt", "range": (20, 60), "label": col, "cat": "Volatility"}
+    if col.startswith("BB_width_") or col in ("KC_WIDTH", "DC_WIDTH"):
+        return {"type": "lt", "range": (0.01, 0.1), "label": col, "cat": "Bands"}
+
+    # Strength (col > threshold = strong trend)
+    if col.startswith("ADX_"):
+        return {"type": "gt", "range": (15, 35), "label": col, "cat": "Trend"}
+    if col == "AROON_up":
+        return {"type": "gt", "range": (50, 90), "label": col, "cat": "Trend"}
+    if col == "AROONOSC_25":
+        return {"type": "gt", "range": (0, 80), "label": col, "cat": "Trend"}
+    if col == "volume_ratio":
+        return {"type": "gt", "range": (0.5, 2.5), "label": col, "cat": "Volume"}
+    if col.startswith("DMP_"):
+        return {"type": "gt", "range": (10, 40), "label": col, "cat": "Trend"}
+    if col == "VI_pos":
+        return {"type": "gt", "range": (0.8, 1.3), "label": col, "cat": "Trend"}
+    if col == "VHF_28":
+        return {"type": "gt", "range": (0.2, 0.5), "label": col, "cat": "Volatility"}
+
+    return None
+
+
+def build_dynamic_catalog(parquet_dir: Path, session_id: str,
+                           primary_tf: str) -> "OrderedDict":
+    """
+    Build the indicator catalog from actual parquet column names.
+    Reads just the schema (no data) from the first available parquet file.
+    Falls back to INDICATOR_CATALOG when no data exists yet.
+    """
+    try:
+        import pyarrow.parquet as pq
+        session_dir = parquet_dir / session_id
+        if not session_dir.exists():
+            return INDICATOR_CATALOG
+        files = sorted(session_dir.glob(f"*_{primary_tf}.parquet"))
+        if not files:
+            return INDICATOR_CATALOG
+        schema = pq.read_schema(str(files[0]))
+        columns = schema.names
+    except Exception:
+        return INDICATOR_CATALOG
+
+    catalog: OrderedDict = OrderedDict()
+    for col in columns:
+        if col in INDICATOR_CATALOG:
+            catalog[col] = INDICATOR_CATALOG[col]
+        else:
+            spec = _auto_classify(col)
+            if spec is not None:
+                catalog[col] = spec
+
+    return catalog if catalog else INDICATOR_CATALOG
+
+
 # EMA period embedded in column names — used to sort active MAs for cross-conditions
 def _ma_period(col: str) -> int:
     """Extract numeric period from EMA_XX column name."""
@@ -348,6 +580,14 @@ def run_algofinder(task_id: str, db_path: Path, session_id: str,
 
     pairs  = m.list_pairs(db_path, session_id)
     active = [p for p in pairs if not p["excluded"] and p["candle_count"] > 0]
+
+    # Filter to user-selected pairs when specified
+    selected_pairs = config.get("selected_pairs") or []
+    if selected_pairs:
+        active = [p for p in active if p["symbol"] in selected_pairs]
+    if not active:
+        active = [p for p in pairs if not p["excluded"] and p["candle_count"] > 0]
+
     primary_tf = timeframes[0] if timeframes else "1h"
     higher_tfs = timeframes[1:] if len(timeframes) > 1 else []
 
@@ -364,7 +604,9 @@ def run_algofinder(task_id: str, db_path: Path, session_id: str,
         if len(df) < 100:
             return None
         strat = BaseStrategy()
-        df = strat.populate_indicators(df)
+        # Skip recomputation when Phase 5 already stored indicators in the parquet
+        if "RSI_14" not in df.columns:
+            df = strat.populate_indicators(df)
         pair_htf_found = False
         for htf in higher_tfs:
             htf_path = parquet_path(parquet_dir, session_id, symbol, htf)
@@ -381,8 +623,8 @@ def run_algofinder(task_id: str, db_path: Path, session_id: str,
                 htf_found_flag[0] = True
         return df
 
-    sample_pairs = active[:20]
-    workers = min(os.cpu_count() or 4, len(sample_pairs), 4)
+    sample_pairs = active[:50]   # cap at 50; user can narrow via per-pair selection
+    workers = min(os.cpu_count() or 4, len(sample_pairs), 8)
     with ThreadPoolExecutor(max_workers=workers) as exe:
         for result in exe.map(_load_pair, sample_pairs):
             if result is not None:

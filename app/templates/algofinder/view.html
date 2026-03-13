@@ -80,7 +80,12 @@
           {# ── Indicator selector (Path B) ──────────────────────────────── #}
           <div class="mb-3">
             <div class="d-flex justify-content-between align-items-center mb-1">
-              <label class="form-label small mb-0">Search Space Indicators</label>
+              <label class="form-label small mb-0">
+                Search Space Indicators
+                <span class="badge bg-secondary ms-1" id="ind-total-badge">
+                  {{ default_indicators | length }}/{{ indicator_catalog | length }}
+                </span>
+              </label>
               <div class="d-flex gap-2">
                 <button type="button" class="btn btn-link btn-sm p-0 text-muted"
                         onclick="setAllIndicators(true)" style="font-size:.75rem">All</button>
@@ -97,11 +102,10 @@
             {% endfor %}
 
             <div class="accordion accordion-flush" id="indAccordion"
-                 style="background:transparent">
+                 style="background:transparent;max-height:380px;overflow-y:auto">
               {% for cat in categories %}
-              {% set cat_id = cat | lower | replace(' ', '_') %}
-              <div class="accordion-item border-0 mb-1"
-                   style="background:transparent">
+              {% set cat_id = "ind_" ~ (cat | lower | replace(' ', '_')) %}
+              <div class="accordion-item border-0 mb-1" style="background:transparent">
                 <h2 class="accordion-header" id="hd-{{ cat_id }}">
                   <button class="accordion-button collapsed py-1 px-2 small fw-semibold"
                           style="background:#161b22;color:#c9d1d9;border:1px solid #30363d;
@@ -113,8 +117,7 @@
                     <span class="ms-auto badge bg-secondary cat-count" data-cat="{{ cat }}"></span>
                   </button>
                 </h2>
-                <div id="acc-{{ cat_id }}" class="accordion-collapse collapse"
-                     data-bs-parent="#indAccordion">
+                <div id="acc-{{ cat_id }}" class="accordion-collapse collapse">
                   <div class="accordion-body py-1 px-2"
                        style="background:#0d1117;border:1px solid #30363d;
                               border-top:none;border-radius:0 0 4px 4px">
@@ -142,10 +145,50 @@
             </div>
             <div class="mt-1 text-muted" style="font-size:.7rem">
               <i class="bi bi-info-circle me-1"></i>
-              Each indicator uses a <strong>fixed logical condition</strong>
+              Each indicator uses its semantically correct condition
               (e.g. RSI &lt; threshold, Price &gt; EMA).
               Optuna decides which to activate and tunes the thresholds.
             </div>
+          </div>
+          {% endif %}
+
+          {# ── Pair selector ─────────────────────────────────────────────── #}
+          {% if active_pairs %}
+          <div class="mb-3">
+            <div class="d-flex justify-content-between align-items-center mb-1">
+              <label class="form-label small mb-0">
+                Test Pairs
+                <span class="badge bg-secondary ms-1" id="pair-badge">{{ active_pairs | length }} / {{ active_pairs | length }}</span>
+              </label>
+              <div class="d-flex gap-2">
+                <button type="button" class="btn btn-link btn-sm p-0 text-muted"
+                        onclick="setAllPairs(true)" style="font-size:.75rem">All</button>
+                <span class="text-muted" style="font-size:.75rem">|</span>
+                <button type="button" class="btn btn-link btn-sm p-0 text-muted"
+                        onclick="setAllPairs(false)" style="font-size:.75rem">None</button>
+              </div>
+            </div>
+            <div style="max-height:160px;overflow-y:auto;background:#0d1117;
+                        border:1px solid #30363d;border-radius:4px;padding:6px 8px">
+              {% for pair in active_pairs %}
+              <div class="form-check form-check-sm mb-1">
+                <input class="form-check-input pair-checkbox"
+                       type="checkbox" name="pairs"
+                       value="{{ pair.symbol }}"
+                       id="pair_{{ loop.index }}"
+                       checked>
+                <label class="form-check-label small text-muted"
+                       for="pair_{{ loop.index }}"
+                       style="font-size:.75rem">
+                  {{ pair.symbol }}
+                  <span class="text-muted" style="font-size:.65rem">({{ pair.candle_count | default(0) }} candles)</span>
+                </label>
+              </div>
+              {% endfor %}
+            </div>
+            <small class="text-muted" style="font-size:.7rem">
+              <i class="bi bi-info-circle me-1"></i>Fewer pairs = faster search. More pairs = more robust results.
+            </small>
           </div>
           {% endif %}
 
@@ -241,7 +284,7 @@
         {% set feats = [
           ('bi-cpu', '#58a6ff', 'Optuna TPE Sampler', 'Uses Tree-structured Parzen Estimator for efficient hyperparameter search.'),
           ('bi-shield-check', '#3fb950', 'OOS Validation', 'Every candidate is validated on out-of-sample data to prevent overfitting.'),
-          ('bi-diagram-3', '#ffa657', 'Multi-Pair Testing', 'Tests on up to 20 pairs simultaneously for robustness.'),
+          ('bi-diagram-3', '#ffa657', 'Multi-Pair Testing', 'Test on any subset of pairs — pick fast (1–5) or thorough (all).'),
           ('bi-list-ol', '#d2a8ff', 'Top-5 Output', 'Returns the 5 best parameter combinations with full rule descriptions.'),
         ] %}
         {% for icon, color, title, desc in feats %}
@@ -272,15 +315,40 @@ function updateCatCounts() {
     badge.textContent = `${checked}/${boxes.length}`;
     badge.className = `ms-auto badge cat-count ${checked > 0 ? 'bg-info text-dark' : 'bg-secondary'}`;
   });
+  // Update total badge
+  const allBoxes = document.querySelectorAll('.ind-checkbox');
+  const totalChecked = [...allBoxes].filter(b => b.checked).length;
+  const totalBadge = document.getElementById('ind-total-badge');
+  if (totalBadge) {
+    totalBadge.textContent = `${totalChecked}/${allBoxes.length}`;
+    totalBadge.className = `badge ms-1 ${totalChecked > 0 ? 'bg-info text-dark' : 'bg-secondary'}`;
+  }
 }
 function setAllIndicators(state) {
   document.querySelectorAll('.ind-checkbox').forEach(b => b.checked = state);
   updateCatCounts();
 }
+function updatePairBadge() {
+  const allPairs = document.querySelectorAll('.pair-checkbox');
+  const checkedPairs = [...allPairs].filter(b => b.checked).length;
+  const badge = document.getElementById('pair-badge');
+  if (badge) {
+    badge.textContent = `${checkedPairs} / ${allPairs.length}`;
+    badge.className = `badge ms-1 ${checkedPairs > 0 ? 'bg-info text-dark' : 'bg-danger'}`;
+  }
+}
+function setAllPairs(state) {
+  document.querySelectorAll('.pair-checkbox').forEach(b => b.checked = state);
+  updatePairBadge();
+}
 document.addEventListener('DOMContentLoaded', () => {
   updateCatCounts();
+  updatePairBadge();
   document.querySelectorAll('.ind-checkbox').forEach(b =>
     b.addEventListener('change', updateCatCounts)
+  );
+  document.querySelectorAll('.pair-checkbox').forEach(b =>
+    b.addEventListener('change', updatePairBadge)
   );
 });
 </script>

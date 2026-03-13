@@ -3,9 +3,11 @@ from flask import Blueprint, current_app, flash, redirect, render_template, requ
 from ..tasks.runner import submit_task
 from ..services.algofinder import (
     INDICATOR_CATALOG, DEFAULT_INDICATORS,
+    build_dynamic_catalog,
     run_algofinder, run_algofinder_path_a,
 )
 from ..utils import db
+from .. import models as m
 
 bp = Blueprint("algofinder", __name__)
 
@@ -24,13 +26,27 @@ def algofinder_view(session_id):
     path_a_result = (path_a_task.get("result", {})
                      if path_a_task and path_a_task.get("status") == "done" else {})
 
+    # Build dynamic catalog from actual parquet columns (falls back to static catalog)
+    primary_tf = (session.get("timeframes") or ["1h"])[0]
+    catalog = build_dynamic_catalog(
+        current_app.config["PARQUET_DIR"], session_id, primary_tf
+    )
+    default_inds = [k for k, v in catalog.items() if v.get("default")]
+    if not default_inds:
+        default_inds = DEFAULT_INDICATORS
+
+    # Available pairs for per-pair selection
+    all_pairs = m.list_pairs(current_app.config["DB_PATH"], session_id)
+    active_pairs = [p for p in all_pairs if not p["excluded"] and p["candle_count"] > 0]
+
     return render_template("algofinder/view.html",
                            session=session,
                            task=task,
                            results=results,
                            path_a_result=path_a_result,
-                           indicator_catalog=INDICATOR_CATALOG,
-                           default_indicators=DEFAULT_INDICATORS)
+                           indicator_catalog=catalog,
+                           default_indicators=default_inds,
+                           active_pairs=active_pairs)
 
 
 @bp.route("/<session_id>/run", methods=["POST"])
@@ -46,6 +62,9 @@ def run(session_id):
     # Indicator selection (Path B only; checkboxes send a list of keys)
     selected_indicators = request.form.getlist("indicators") or DEFAULT_INDICATORS
 
+    # Per-pair selection (empty = use all active pairs)
+    selected_pairs = request.form.getlist("pairs") or []
+
     config = {
         "initial_capital": float(request.form.get("initial_capital",
                                                     current_app.config["DEFAULT_INITIAL_CAPITAL"])),
@@ -55,6 +74,7 @@ def run(session_id):
         "wfo_splits": 3,
         "wfo_train_ratio": 0.7,
         "selected_indicators": selected_indicators,
+        "selected_pairs": selected_pairs,
     }
 
     if mode == "path_a" and session.get("entry_logic"):
