@@ -771,9 +771,11 @@ def run_algofinder(task_id: str, db_path: Path, session_id: str,
     )
 
     completed = [t for t in study.trials
-                 if t.state == optuna.trial.TrialState.COMPLETE and t.value > -100]
+                 if t.state == optuna.trial.TrialState.COMPLETE and t.value > -999]
     completed.sort(key=lambda t: t.value, reverse=True)
     top5 = completed[:5]
+
+    any_profitable = any(t.value > 0 for t in top5)
 
     for rank, trial in enumerate(top5, 1):
         params = trial.params
@@ -813,9 +815,16 @@ def run_algofinder(task_id: str, db_path: Path, session_id: str,
             },
         )
 
-    progress(n_trials, n_trials,
-             f"Algo Finder complete — {len(top5)} strategies found.")
-    m.update_task(db_path, task_id, result={"top_count": len(top5)})
+    if not top5:
+        summary = "Algo Finder finished — no valid strategies (all trials had < 5 trades). Try more trials or fewer indicators."
+    elif any_profitable:
+        summary = f"Algo Finder complete — {len(top5)} strategies found, best OOS score: {top5[0].value:.3f}"
+    else:
+        summary = (f"Algo Finder finished — {len(top5)} strategies saved but none were profitable OOS. "
+                   "Consider more trials, different indicators, or more data.")
+    progress(n_trials, n_trials, summary)
+    m.update_task(db_path, task_id,
+                  result={"top_count": len(top5), "any_profitable": any_profitable})
 
 
 # ── Rule description ──────────────────────────────────────────────────────────
@@ -1076,9 +1085,10 @@ def run_algofinder_path_a(task_id: str, db_path: Path, session_id: str,
     )
 
     completed = [t for t in study.trials
-                 if t.state == optuna.trial.TrialState.COMPLETE and t.value > -100]
+                 if t.state == optuna.trial.TrialState.COMPLETE and t.value > -999]
     completed.sort(key=lambda t: t.value, reverse=True)
     top5 = completed[:5]
+    any_profitable_a = any(t.value > 0 for t in top5)
 
     for rank, trial in enumerate(top5, 1):
         params   = trial.params
@@ -1116,8 +1126,16 @@ def run_algofinder_path_a(task_id: str, db_path: Path, session_id: str,
             },
         )
 
-    progress(n_trials, n_trials, f"Path A complete: {len(top5)} strategies found.")
-    m.update_task(db_path, task_id, result={"top_count": len(top5), "mode": "path_a"})
+    if not top5:
+        pa_summary = "Path A finished — no valid strategies (all trials had < 5 trades)."
+    elif any_profitable_a:
+        pa_summary = f"Path A complete — {len(top5)} strategies found, best score: {top5[0].value:.3f}"
+    else:
+        pa_summary = f"Path A finished — {len(top5)} strategies saved but none profitable OOS."
+    progress(n_trials, n_trials, pa_summary)
+    m.update_task(db_path, task_id,
+                  result={"top_count": len(top5), "mode": "path_a",
+                          "any_profitable": any_profitable_a})
 
 
 def _describe_path_a_rules(condition_code: str, direction: str,
