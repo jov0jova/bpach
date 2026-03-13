@@ -334,25 +334,121 @@ def _auto_classify(col: str) -> "dict | None":
     return None
 
 
+# ── Full static column list (all indicators produced by BaseStrategy) ─────────
+# This is built once at import time so the selector shows all indicators
+# even before any parquet data exists (i.e. before Phase 5 runs).
+
+_ALL_KNOWN_COLS: tuple = (
+    # Moving averages
+    "EMA_8", "EMA_13", "EMA_20", "EMA_50", "EMA_100", "EMA_200",
+    "SMA_8", "SMA_13", "SMA_20", "SMA_21", "SMA_50", "SMA_100", "SMA_200",
+    "WMA_8", "WMA_13", "WMA_20", "WMA_21", "WMA_50", "WMA_100", "WMA_200",
+    "TEMA_9", "TEMA_21", "TEMA_50",
+    "HMA_9", "HMA_20", "HMA_50",
+    "ZLEMA_20", "ZLEMA_50",
+    "TRIMA_20", "TRIMA_50",
+    "ALMA_9", "ALMA_21",
+    "T3_5", "T3_10",
+    "VIDYA_14", "FWMA_10", "PWMA_10", "SWMA", "HWMA",
+    "VWMA_20", "VWMA_50",
+    "KAMA", "VWAP", "MCGD_14",
+    # Oscillators
+    "RSI_7", "RSI_14", "RSI_21",
+    "STOCH_K",
+    "STOCHRSI_K", "STOCHRSI_K_smooth",
+    "WILLR_14",
+    "MFI_14",
+    "CCI_20",
+    "CMO_14", "RSX_14", "CRSI", "UO", "KDJ_K",
+    # Momentum sign
+    "MACD_hist", "AO", "CMF_20",
+    "PPO_hist", "AROON_osc",
+    "KST", "DPO_20", "STC", "FISHER",
+    "SQUEEZE_HIST", "QQE_HIST",
+    "BULL_POWER_13",
+    "TSI_13_25", "SMI", "COPPOCK",
+    "RVGI_14", "TRIX_15", "PVO",
+    "KVO", "FI_13", "EOM_14",
+    "AD", "PVT", "NET_VOL", "BOP",
+    "KDJ_J",
+    # Price-vs-average sign
+    "EMA50_slope",
+    "close_vs_EMA_20", "close_vs_EMA_50", "close_vs_EMA_200",
+    "CLOSE_VS_VWAP",
+    "BIAS_6", "BIAS_14", "BIAS_26",
+    # Rate of change / momentum
+    "ROC_5", "ROC_10", "ROC_14", "ROC_20", "ROC_30",
+    "MOM_10", "MOM_20",
+    "close_pct_change",
+    # Statistical sign
+    "LINREG_SLOPE_5", "LINREG_SLOPE_14",
+    "ZSCORE_10", "ZSCORE_20", "ZSCORE_50",
+    "PCT_RANK_10", "PCT_RANK_20", "PCT_RANK_50",
+    "AUTOCORR_1",
+    # Trend strength / gt
+    "ADX_14",
+    "AROON_up", "AROONOSC_25",
+    "volume_ratio",
+    "DMP_14", "DMP_21",
+    "VI_pos", "VHF_28",
+    # Flags
+    "SUPERT_dir", "PSAR_dir", "OBV_trend",
+    "GMMA_BULL", "ICH_above_cloud",
+    "HILO_dir", "PMAX_dir",
+    "TTM_TREND_6", "ALLIGATOR_BULL", "FRACTAL_BULL",
+    # Candlestick flags
+    "CDL_HAMMER", "CDL_INV_HAMMER", "CDL_BULL_ENGULFING",
+    "CDL_MORNING_STAR", "CDL_3_WHITE_SOLDIERS",
+    "CDL_PIERCING", "CDL_DRAGONFLY", "CDL_TWEEZER_BOTTOM",
+    "CDL_3_INSIDE_UP", "CDL_BULL_MARUBOZU",
+    # Bands lower (oversold bounce)
+    "BB_lower_14", "BB_lower_20", "KC_lower", "DC_lower", "ACCB_LOWER",
+    # Band pct
+    "BB_pct_14", "BB_pct_20",
+    # Band / volatility width lt
+    "BB_width_14", "BB_width_20", "KC_WIDTH", "DC_WIDTH",
+    # Volatility lt
+    "NATR_14", "HV_10", "HV_20", "HV_30", "HV_60",
+    "UI_14", "MASS_INDEX", "CHOP_14",
+)
+
+
+def _build_full_catalog() -> OrderedDict:
+    """Build the complete indicator catalog from all known column names."""
+    catalog: OrderedDict = OrderedDict()
+    for col in _ALL_KNOWN_COLS:
+        if col in INDICATOR_CATALOG:
+            catalog[col] = INDICATOR_CATALOG[col]
+        else:
+            spec = _auto_classify(col)
+            if spec is not None:
+                catalog[col] = spec
+    return catalog
+
+
+# Pre-built at import — always available regardless of parquet state
+FULL_INDICATOR_CATALOG: OrderedDict = _build_full_catalog()
+
+
 def build_dynamic_catalog(parquet_dir: Path, session_id: str,
                            primary_tf: str) -> "OrderedDict":
     """
     Build the indicator catalog from actual parquet column names.
     Reads just the schema (no data) from the first available parquet file.
-    Falls back to INDICATOR_CATALOG when no data exists yet.
+    Falls back to FULL_INDICATOR_CATALOG (all known columns) when no data exists.
     """
     try:
         import pyarrow.parquet as pq
         session_dir = parquet_dir / session_id
         if not session_dir.exists():
-            return INDICATOR_CATALOG
+            return FULL_INDICATOR_CATALOG
         files = sorted(session_dir.glob(f"*_{primary_tf}.parquet"))
         if not files:
-            return INDICATOR_CATALOG
+            return FULL_INDICATOR_CATALOG
         schema = pq.read_schema(str(files[0]))
         columns = schema.names
     except Exception:
-        return INDICATOR_CATALOG
+        return FULL_INDICATOR_CATALOG
 
     catalog: OrderedDict = OrderedDict()
     for col in columns:
@@ -363,7 +459,7 @@ def build_dynamic_catalog(parquet_dir: Path, session_id: str,
             if spec is not None:
                 catalog[col] = spec
 
-    return catalog if catalog else INDICATOR_CATALOG
+    return catalog if catalog else FULL_INDICATOR_CATALOG
 
 
 # EMA period embedded in column names — used to sort active MAs for cross-conditions
@@ -405,7 +501,7 @@ class CatalogStrategy(BaseStrategy):
         for col in self._selected:
             if not p.get(f"use_{col}", 0):
                 continue
-            spec = INDICATOR_CATALOG.get(col)
+            spec = FULL_INDICATOR_CATALOG.get(col)
             if spec is None or col not in df.columns:
                 continue
 
@@ -503,7 +599,7 @@ def _objective(trial, dfs: list, config: dict,
 
     # Per-indicator parameters
     for col in selected:
-        spec = INDICATOR_CATALOG.get(col)
+        spec = FULL_INDICATOR_CATALOG.get(col)
         if spec is None:
             continue
         params[f"use_{col}"] = trial.suggest_categorical(f"use_{col}", [0, 1])
@@ -568,8 +664,8 @@ def run_algofinder(task_id: str, db_path: Path, session_id: str,
         config = {}
 
     selected = config.get("selected_indicators") or DEFAULT_INDICATORS
-    # Keep only keys that exist in the catalog
-    selected = [k for k in selected if k in INDICATOR_CATALOG]
+    # Keep only keys that exist in the full catalog (static + auto-classified)
+    selected = [k for k in selected if k in FULL_INDICATOR_CATALOG]
     if not selected:
         selected = DEFAULT_INDICATORS
 
@@ -639,7 +735,7 @@ def run_algofinder(task_id: str, db_path: Path, session_id: str,
         return
 
     sel_labels = ", ".join(
-        INDICATOR_CATALOG[k]["label"] for k in selected if k in INDICATOR_CATALOG
+        FULL_INDICATOR_CATALOG[k]["label"] for k in selected if k in FULL_INDICATOR_CATALOG
     )
     tf_desc = primary_tf + (f" + HTF: {', '.join(higher_tfs)}" if htf_found else "")
     progress(0, n_trials,
@@ -733,7 +829,7 @@ def _describe_rules(params: dict, selected: list) -> str:
     for col in selected:
         if not params.get(f"use_{col}", 0):
             continue
-        spec = INDICATOR_CATALOG.get(col)
+        spec = FULL_INDICATOR_CATALOG.get(col)
         if not spec:
             continue
         kind = spec["type"]
