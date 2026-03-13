@@ -1,7 +1,7 @@
 from flask import Blueprint, current_app, flash, redirect, render_template, url_for
 
-from ..tasks.runner import submit_task
-from ..services.indicators import run_indicators
+from ..tasks.runner import submit_task, request_cancel
+from ..services.indicators import run_indicators, run_reset_indicators
 from ..utils import db
 
 bp = Blueprint("indicators", __name__)
@@ -50,3 +50,32 @@ def run(session_id):
 def status(session_id):
     task = db.get_latest_task(session_id, "indicators")
     return render_template("partials/task_progress.html", task=task)
+
+
+@bp.route("/<session_id>/cancel", methods=["POST"])
+def cancel(session_id):
+    task = db.get_latest_task(session_id, "indicators")
+    if task and task["status"] == "running":
+        request_cancel(current_app.config["DB_PATH"], task["id"])
+        flash("Stop signal sent — current jobs will finish then the task will halt.", "warning")
+    return redirect(url_for("indicators.indicators_view", session_id=session_id))
+
+
+@bp.route("/<session_id>/reset", methods=["POST"])
+def reset(session_id):
+    session = db.get_session(session_id)
+    if not session:
+        flash("Session not found.", "error")
+        return redirect(url_for("sessions.list_sessions"))
+
+    submit_task(
+        current_app.config["DB_PATH"],
+        session_id,
+        "indicators",
+        run_reset_indicators,
+        session_id,
+        current_app.config["PARQUET_DIR"],
+        session["timeframes"],
+    )
+    flash("Indicator removal started — parquet files will be reset to OHLCV only.", "info")
+    return redirect(url_for("indicators.indicators_view", session_id=session_id))

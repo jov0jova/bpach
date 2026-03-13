@@ -320,6 +320,14 @@ def get_task(db_path, task_id: str) -> dict | None:
     return d
 
 
+def get_task_status(db_path, task_id: str) -> str | None:
+    """Return only the status field of a task by its id. Fast single-field read."""
+    con = _conn(db_path)
+    row = con.execute("SELECT status FROM tasks WHERE id=?", [task_id]).fetchone()
+    con.close()
+    return row[0] if row else None
+
+
 def get_latest_task(db_path, session_id: str, task_type: str) -> dict | None:
     con = _conn(db_path)
     row = con.execute("""

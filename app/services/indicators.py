@@ -35,6 +35,9 @@ from .. import models as m
 from ..strategies.base import BaseStrategy
 from ..utils.parquet import parquet_path, write_enriched
 
+# Base OHLCV columns present in every parquet before indicator enrichment.
+_OHLCV_COLS = {"timestamp", "open", "high", "low", "close", "volume"}
+
 logger = logging.getLogger(__name__)
 
 # ── Executor selection ────────────────────────────────────────────────────────
@@ -66,32 +69,80 @@ def _enrich_worker(job: tuple) -> tuple[str, str, str]:
         return symbol, tf, f"error: {exc}"
 
 
-# ── Internal helper ───────────────────────────────────────────────────────────
+# ── Internal helpers ──────────────────────────────────────────────────────────
+
+def _reset_worker(job: tuple) -> tuple[str, str, str]:
+    """Strip all non-OHLCV columns from a parquet file in-place."""
+    session_id, parquet_dir_str, symbol, tf = job
+    path = parquet_path(Path(parquet_dir_str), session_id, symbol, tf)
+    if not path.exists():
+        return symbol, tf, "skipped"
+    try:
+        import pyarrow.parquet as pq
+        schema = pq.read_schema(path)
+        keep   = [c for c in schema.names if c in _OHLCV_COLS]
+        if len(keep) == len(schema.names):
+            return symbol, tf, "already_clean"
+        df = pd.read_parquet(path, columns=keep)
+        df.reset_index(drop=True).to_parquet(path, index=False)
+        return symbol, tf, "ok"
+    except Exception as exc:
+        return symbol, tf, f"error: {exc}"
+
 
 def _run_jobs(executor_cls, workers: int, jobs: list,
-              task_id: str, db_path: Path, total: int) -> int:
+              task_id: str, db_path: Path, total: int,
+              worker_fn=None, stop_event: threading.Event | None = None) -> int:
     """Submit all jobs to *executor_cls*, collect results, update progress.
-    Returns the number of completed jobs."""
+    Checks stop_event between completions — sets pending futures cancelled and
+    returns early when signalled.  Returns the number of completed jobs."""
+    if worker_fn is None:
+        worker_fn = _enrich_worker
     completed = 0
-    lock = threading.Lock()          # only needed for ThreadPoolExecutor
+    lock = threading.Lock()
     with executor_cls(max_workers=workers) as exe:
-        futures = {exe.submit(_enrich_worker, job): job for job in jobs}
-        for fut in as_completed(futures):
-            symbol, tf, _status = fut.result()
+        futures = [exe.submit(worker_fn, job) for job in jobs]
+        fut_map = {f: jobs[i] for i, f in enumerate(futures)}
+        for fut in as_completed(fut_map):
+            if stop_event and stop_event.is_set():
+                # Cancel every future that hasn't started yet
+                for f in futures:
+                    f.cancel()
+                break
+            try:
+                symbol, tf, _status = fut.result()
+            except Exception:
+                symbol, tf = "?", "?"
             with lock:
                 completed += 1
                 m.update_task(db_path, task_id,
                               progress=completed, total=total,
-                              message=f"Enriched {symbol} {tf} ({completed}/{total})…")
+                              message=f"Processed {symbol} {tf} ({completed}/{total})…")
     return completed
 
 
 # ── Public entry point ────────────────────────────────────────────────────────
 
-def run_indicators(task_id: str, db_path: Path, session_id: str,
-                   parquet_dir: Path, timeframes: list) -> None:
-    """Background task: enrich all parquet files with indicators."""
+def _dispatch(executor_cls_primary, workers, jobs, task_id, db_path, total,
+              worker_fn=None, stop_event=None):
+    """Run jobs with the primary executor, fall back to threads on failure."""
+    kwargs = dict(worker_fn=worker_fn, stop_event=stop_event)
+    if _USE_PROCESSES and executor_cls_primary is ProcessPoolExecutor:
+        try:
+            return _run_jobs(ProcessPoolExecutor, workers, jobs,
+                             task_id, db_path, total, **kwargs)
+        except Exception as exc:
+            logger.warning("ProcessPoolExecutor failed (%s) — retrying with threads.", exc)
+            m.update_task(db_path, task_id, progress=0, total=total,
+                          message="Process pool failed, retrying with threads…")
+    return _run_jobs(ThreadPoolExecutor, workers, jobs,
+                     task_id, db_path, total, **kwargs)
 
+
+def run_indicators(task_id: str, db_path: Path, session_id: str,
+                   parquet_dir: Path, timeframes: list,
+                   stop_event: threading.Event | None = None) -> None:
+    """Background task: enrich all parquet files with indicators."""
     pairs  = m.list_pairs(db_path, session_id)
     active = [p for p in pairs if not p["excluded"] and p["candle_count"] > 0]
     total  = len(active) * len(timeframes)
@@ -105,24 +156,42 @@ def run_indicators(task_id: str, db_path: Path, session_id: str,
                for p in active for tf in timeframes]
     workers = min(_WORKERS, total)
 
-    if _USE_PROCESSES:
-        # Attempt true multi-process parallelism; fall back to threads if the
-        # pool crashes (e.g. OOM on low-memory machines).
-        try:
-            _run_jobs(ProcessPoolExecutor, workers, jobs,
-                      task_id, db_path, total)
-        except Exception as exc:
-            logger.warning(
-                "ProcessPoolExecutor failed (%s) — retrying with threads.", exc)
-            m.update_task(db_path, task_id, progress=0, total=total,
-                          message="Process pool failed, retrying with threads…")
-            _run_jobs(ThreadPoolExecutor, workers, jobs,
-                      task_id, db_path, total)
-    else:
-        # Windows: threads only — avoids spawn re-import / DuckDB lock crash.
-        _run_jobs(ThreadPoolExecutor, workers, jobs,
-                  task_id, db_path, total)
+    _dispatch(ProcessPoolExecutor, workers, jobs, task_id, db_path, total,
+              worker_fn=_enrich_worker, stop_event=stop_event)
+
+    if stop_event and stop_event.is_set():
+        return   # status already set to 'cancelled' by runner.request_cancel
 
     m.update_task(db_path, task_id, progress=total, total=total,
                   message=(f"Done — indicators added to "
+                           f"{len(active)} pairs × {len(timeframes)} timeframes."))
+
+
+def run_reset_indicators(task_id: str, db_path: Path, session_id: str,
+                         parquet_dir: Path, timeframes: list,
+                         stop_event: threading.Event | None = None) -> None:
+    """Background task: strip indicator columns from all parquet files,
+    keeping only the original OHLCV columns."""
+    pairs  = m.list_pairs(db_path, session_id)
+    active = [p for p in pairs if not p["excluded"] and p["candle_count"] > 0]
+    total  = len(active) * len(timeframes)
+
+    if total == 0:
+        m.update_task(db_path, task_id, progress=0, total=0,
+                      message="No pairs to reset.")
+        return
+
+    jobs    = [(session_id, str(parquet_dir), p["symbol"], tf)
+               for p in active for tf in timeframes]
+    workers = min(_WORKERS, total)
+
+    # Reset worker uses pandas only (no BaseStrategy) — threads are fine on all platforms.
+    _run_jobs(ThreadPoolExecutor, workers, jobs, task_id, db_path, total,
+              worker_fn=_reset_worker, stop_event=stop_event)
+
+    if stop_event and stop_event.is_set():
+        return
+
+    m.update_task(db_path, task_id, progress=total, total=total,
+                  message=(f"Indicators removed from "
                            f"{len(active)} pairs × {len(timeframes)} timeframes."))

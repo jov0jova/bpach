@@ -406,7 +406,8 @@ document.addEventListener('DOMContentLoaded', () => {
     progressBody.addEventListener('htmx:afterSwap', function() {
       const done  = this.querySelector('.text-success');
       const error = this.querySelector('.bi-x-circle-fill');
-      if (done || error) {
+      const cancelled = this.querySelector('.bi-stop-circle-fill');
+      if (done || error || cancelled) {
         // Task finished — reload after a short delay to show results
         setTimeout(() => window.location.reload(), 1200);
       }
