@@ -4,21 +4,18 @@ Applies BaseStrategy.populate_indicators() to every downloaded parquet file.
 
 Parallelism strategy
 ────────────────────
-• Linux / macOS — ProcessPoolExecutor (fork):
-    Each job runs in its own OS process, bypassing the GIL entirely.
-    Fork copies the parent's already-initialised memory so the Flask app's
-    __init__.py is NOT re-executed in worker processes.
+Each job is a mixed IO + CPU task:
+  read parquet  → populate_indicators (pandas-ta / NumPy / pyarrow)  → write parquet
 
-• Windows — ThreadPoolExecutor (spawn-safe):
-    ProcessPoolExecutor on Windows uses 'spawn', which re-imports every
-    module in each worker process.  That triggers app/__init__.py →
-    models.init_db() → DuckDB file-lock collision → worker crash.
-    Threads share the same process so there is no re-import.  We still get
-    meaningful parallelism because pandas / numpy / pyarrow release the GIL
-    for most of their heavy operations.
+pandas, NumPy and pyarrow release the GIL for their heavy operations, so
+ThreadPoolExecutor achieves true multi-core parallelism with far less overhead
+than ProcessPoolExecutor (no fork, no pickle, no IPC).
 
-In both cases a try/except catches a broken pool and retries with threads
-so the task never fails silently.
+Worker count is set to 4 × logical CPUs so that while some threads wait on
+disk IO the CPU is kept busy by other threads computing indicators.  Memory
+usage scales linearly with worker count; at ~30 MB/parquet and the default of
+cpu_count × 4 workers the peak overhead is comfortably under 2 GB on most
+machines.
 """
 import logging
 import os
@@ -41,12 +38,13 @@ _OHLCV_COLS = {"timestamp", "open", "high", "low", "close", "volume"}
 logger = logging.getLogger(__name__)
 
 # ── Executor selection ────────────────────────────────────────────────────────
-# Windows uses 'spawn' for new processes → Flask re-import → DuckDB lock crash.
-# Linux/macOS use 'fork' → safe to use processes.
-_USE_PROCESSES = sys.platform != "win32"
-# No artificial cap — use all logical CPUs. On Windows (threads) pandas/numpy
-# release the GIL for heavy ops so more threads = more throughput.
-_WORKERS = os.cpu_count() or 1
+# pandas / NumPy / pyarrow release the GIL for heavy ops, so threads give true
+# multi-core throughput without process-fork overhead.  We still keep the
+# ProcessPoolExecutor path as a fallback (never used by default).
+_USE_PROCESSES = False  # threads on all platforms — lower overhead, GIL released by libs
+# 4× oversubscription: while threads wait on disk IO, the CPU stays busy with
+# computation from other threads.
+_WORKERS = (os.cpu_count() or 1) * 4
 
 
 # ── Worker function (module-level so ProcessPoolExecutor can pickle it) ───────

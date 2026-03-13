@@ -720,7 +720,7 @@ def run_algofinder(task_id: str, db_path: Path, session_id: str,
         return df
 
     sample_pairs = active[:50]   # cap at 50; user can narrow via per-pair selection
-    workers = min(os.cpu_count() or 4, len(sample_pairs), 8)
+    workers = min((os.cpu_count() or 4) * 4, len(sample_pairs))
     with ThreadPoolExecutor(max_workers=workers) as exe:
         for result in exe.map(_load_pair, sample_pairs):
             if result is not None:
@@ -761,7 +761,7 @@ def run_algofinder(task_id: str, db_path: Path, session_id: str,
                 best = float("nan")
             progress(count, n_trials, f"Trial {count}/{n_trials} — best score: {best:.3f}")
 
-    n_jobs = min(os.cpu_count() or 1, 4)
+    n_jobs = (os.cpu_count() or 1) * 2
     study.optimize(
         lambda trial: _objective(trial, dfs, config, selected, has_htf=htf_found),
         n_trials=n_trials,
@@ -1043,7 +1043,7 @@ def run_algofinder_path_a(task_id: str, db_path: Path, session_id: str,
                 logger.warning("PathA HTF inject %s %s: %s", symbol, htf, e)
         return df
 
-    workers_a = min(os.cpu_count() or 4, len(active[:20]), 4)
+    workers_a = min((os.cpu_count() or 4) * 4, len(active[:20]))
     with ThreadPoolExecutor(max_workers=workers_a) as exe:
         for result in exe.map(_load_pair_a, active[:20]):
             if result is not None:
@@ -1074,7 +1074,7 @@ def run_algofinder_path_a(task_id: str, db_path: Path, session_id: str,
                 best = float("nan")
             progress(count, n_trials, f"Trial {count}/{n_trials} — best: {best:.3f}")
 
-    n_jobs_a = min(os.cpu_count() or 1, 4)
+    n_jobs_a = (os.cpu_count() or 1) * 2
     study.optimize(
         lambda trial: _path_a_objective(
             trial, dfs, config, condition_code, indicator_filters),
