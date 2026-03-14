@@ -169,7 +169,7 @@ def _build_htf_analysis_cols(timeframes: list) -> list:
 
 
 def run_ic_analysis(task_id: str, db_path: Path, session_id: str,
-                    parquet_dir: Path, timeframes: list) -> None:
+                    parquet_dir: Path, timeframes: list,stop_event=None) -> None:
     """
     Background task: compute IC for every indicator across all pairs and all timeframes.
 

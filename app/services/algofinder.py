@@ -657,7 +657,7 @@ def _objective(trial, dfs: list, config: dict,
 
 def run_algofinder(task_id: str, db_path: Path, session_id: str,
                    parquet_dir: Path, timeframes: list,
-                   n_trials: int = 50, config: dict = None) -> None:
+                   n_trials: int = 50, config: dict = None, stop_event=None) -> None:
     """
     Background task: run Optuna search for best strategy parameters.
     config["selected_indicators"] controls which indicators are searched.
