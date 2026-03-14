@@ -107,6 +107,24 @@ def run_download(task_id: str, db_path: Path, session_id: str,
             tl.ex.load_markets()
         return tl.ex
 
+    def _incremental_since(pair: dict, tf: str) -> int:
+        """Return the since_ms to use for this pair/tf.
+        If data already exists and data_end is tracked in the DB, start from the
+        next bar after the last downloaded candle so we only fetch new bars.
+        Falls back to the full lookback window on any error."""
+        if not pair.get("data_end") or not pair.get("candle_count", 0):
+            return since_ms
+        try:
+            from ..utils.parquet import parquet_path as _pp
+            _path = _pp(parquet_dir, session_id, pair["symbol"], tf)
+            if not _path.exists():
+                return since_ms
+            tf_ms = TIMEFRAME_MS.get(tf, 3_600_000)
+            last_ts_ms = int(pd.Timestamp(pair["data_end"]).timestamp() * 1000)
+            return max(since_ms, last_ts_ms + tf_ms)
+        except Exception:
+            return since_ms
+
     def download_pair(pair: dict) -> tuple[str, list[str]]:
         """Download all timeframes for one pair. Returns (symbol, errors)."""
         symbol = pair["symbol"]
@@ -114,7 +132,8 @@ def run_download(task_id: str, db_path: Path, session_id: str,
         ex = _get_thread_exchange()
         for tf in timeframes:
             try:
-                _download_pair(ex, db_path, parquet_dir, session_id, symbol, tf, since_ms)
+                pair_since = _incremental_since(pair, tf)
+                _download_pair(ex, db_path, parquet_dir, session_id, symbol, tf, pair_since)
             except Exception as e:
                 logger.warning("Failed to download %s %s: %s", symbol, tf, e)
                 errors.append(f"{tf}: {e}")

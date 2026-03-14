@@ -12,8 +12,9 @@ class Config:
     SESSIONS_DIR = DATA_DIR / "sessions"
     LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO")
 
-    # Threading
-    MAX_WORKERS = 2
+    # Threading: allow up to cpu_count concurrent background tasks (min 2)
+    import os as _os
+    MAX_WORKERS = max(2, _os.cpu_count() or 2)
 
     # Backtest defaults
     DEFAULT_INITIAL_CAPITAL = 10_000.0

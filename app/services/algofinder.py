@@ -442,7 +442,8 @@ def build_dynamic_catalog(parquet_dir: Path, session_id: str,
         session_dir = parquet_dir / session_id
         if not session_dir.exists():
             return FULL_INDICATOR_CATALOG
-        files = sorted(session_dir.glob(f"*_{primary_tf}.parquet"))
+        # Files are stored as {session_id}/{symbol_dir}/{timeframe}.parquet
+        files = sorted(session_dir.glob(f"*/{primary_tf}.parquet"))
         if not files:
             return FULL_INDICATOR_CATALOG
         schema = pq.read_schema(str(files[0]))
@@ -622,7 +623,9 @@ def _objective(trial, dfs: list, config: dict,
     for df in dfs:
         if len(df) < 100:
             continue
-        enriched = df.copy()
+        # Shallow copy: only the signal columns are added/overwritten, so a
+        # full deep copy of 200+ indicator columns is unnecessary.
+        enriched = df.copy(deep=False)
         enriched = strategy.populate_entry_signal(enriched)
         enriched = strategy.populate_exit_signal(enriched)
         wfo = _walk_forward_backtest(
@@ -745,6 +748,7 @@ def run_algofinder(task_id: str, db_path: Path, session_id: str,
     study = optuna.create_study(
         direction="maximize",
         sampler=optuna.samplers.TPESampler(seed=42),
+        pruner=optuna.pruners.MedianPruner(n_startup_trials=10, n_warmup_steps=0),
     )
 
     trial_count = [0]

@@ -12,7 +12,8 @@ from .. import models as m
 
 logger = logging.getLogger(__name__)
 
-_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="caf_worker")
+from ..config import Config as _Config
+_executor = ThreadPoolExecutor(max_workers=_Config.MAX_WORKERS, thread_name_prefix="caf_worker")
 
 # ── Cooperative cancellation ──────────────────────────────────────────────────
 # Maps task_id → threading.Event. Setting the event signals the worker to stop
