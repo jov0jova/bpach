@@ -2,303 +2,315 @@
 {% block title %}Algo Finder – {{ session.name }}{% endblock %}
 
 {% block content %}
-<div class="mt-3 mb-4">
-  <h2 class="mb-0"><i class="bi bi-search-heart-fill me-2 text-danger"></i>Phase 8 — Algo Finder</h2>
-  <small class="text-muted">Discover strategies via Optuna + walk-forward OOS validation.</small>
+<div class="mt-3 mb-3">
+  <h2 class="mb-0">
+    <i class="bi bi-search-heart-fill me-2 text-danger"></i>Algo Finder
+    <small class="fs-6 text-muted ms-2">Find the most profitable strategy — a quant's wet dream</small>
+  </h2>
 </div>
 
-<!-- Mode banner -->
-{% if session.entry_mode == 'path_a' and session.entry_logic %}
-<div class="alert alert-warning d-flex align-items-center gap-2 py-2 mb-3">
-  <i class="bi bi-funnel-fill"></i>
+<!-- IC Analysis badge -->
+{% if ic_result and ic_result.get('indicators_analyzed') %}
+<div class="alert alert-success d-flex align-items-center gap-2 py-2 mb-3">
+  <i class="bi bi-brain"></i>
   <div>
-    <strong>Path A active</strong> — entry logic is fixed, Optuna tunes complementary filter thresholds.
-    {% if not path_a_result.get('top_indicators') %}
-    <a href="{{ url_for('entry_logic.entry_logic_view', session_id=session.id) }}"
-       class="ms-2 btn btn-sm btn-outline-warning">Run Entry Analysis first →</a>
-    {% endif %}
+    <strong>IC-Guided mode available</strong> — {{ ic_result.indicators_analyzed }} indicators analyzed.
+    Top signal: <code>{{ ic_result.top_overall[0].col if ic_result.get('top_overall') else '—' }}</code>
+    (IC={{ '%.4f'|format(ic_result.top_overall[0].best_ic) if ic_result.get('top_overall') else '—' }}).
+    Optuna will bias sampling toward high-IC indicators.
   </div>
 </div>
 {% else %}
-<div class="alert alert-info d-flex align-items-center gap-2 py-2 mb-3">
-  <i class="bi bi-shuffle"></i>
-  <strong>Path B active</strong> — free search across all indicators.
-  <a href="{{ url_for('entry_logic.entry_logic_view', session_id=session.id) }}"
-     class="ms-2 btn btn-sm btn-outline-info">Define entry logic for Path A →</a>
+<div class="alert alert-secondary d-flex align-items-center gap-2 py-2 mb-3">
+  <i class="bi bi-lightbulb"></i>
+  <div>
+    Run <a href="{{ url_for('ic_analysis.ic_view', session_id=session.id) }}" class="alert-link">IC Analysis</a>
+    first to enable IC-guided smart sampling (Step 4 → Algo Finder works better with IC results).
+  </div>
 </div>
 {% endif %}
 
-<div class="row g-4">
+<div class="row g-3">
+  <!-- ── LEFT: Settings ──────────────────────────────────────────────── -->
   <div class="col-lg-4">
-    <div class="card caf-card">
+
+    <form method="post" action="{{ url_for('algofinder.run', session_id=session.id) }}">
+
+    <!-- Strategy Template -->
+    <div class="card caf-card mb-3">
+      <div class="card-header caf-card-header"><i class="bi bi-layout-text-sidebar me-2"></i>Strategy Template</div>
+      <div class="card-body">
+        <div class="mb-2 small text-muted">Pre-configured indicator sets that bias the search toward proven archetypes.</div>
+        <div class="row g-2">
+          {% for key, tmpl in strategy_templates.items() %}
+          <div class="col-6">
+            <input type="radio" class="btn-check" name="template" value="{{ key }}" id="tmpl_{{ key }}"
+                   {% if key == 'free' %}checked{% endif %}>
+            <label class="btn btn-outline-secondary btn-sm w-100 text-start" for="tmpl_{{ key }}"
+                   style="padding:6px 8px">
+              <i class="{{ tmpl.icon }} me-1"></i>
+              <strong style="font-size:11px">{{ tmpl.label }}</strong>
+              <div style="font-size:10px;color:#aaa;line-height:1.2;margin-top:2px">{{ tmpl.description }}</div>
+            </label>
+          </div>
+          {% endfor %}
+        </div>
+      </div>
+    </div>
+
+    <!-- Search Mode -->
+    <div class="card caf-card mb-3">
       <div class="card-header caf-card-header"><i class="bi bi-sliders me-2"></i>Search Settings</div>
       <div class="card-body">
-        <form method="post" action="{{ url_for('algofinder.run', session_id=session.id) }}">
 
-          <div class="mb-3">
-            <label class="form-label small">Search Mode</label>
-            <div class="d-flex gap-3">
-              <div class="form-check">
-                <input class="form-check-input" type="radio" name="mode" value="path_b"
-                       id="mode-b" {% if session.entry_mode != 'path_a' %}checked{% endif %}>
-                <label class="form-check-label small" for="mode-b">
-                  <span class="text-info">Path B</span> — Free search
-                </label>
-              </div>
-              <div class="form-check">
-                <input class="form-check-input" type="radio" name="mode" value="path_a"
-                       id="mode-a" {% if session.entry_mode == 'path_a' %}checked{% endif %}
-                       {% if not session.entry_logic %}disabled title="Define entry logic first"{% endif %}>
-                <label class="form-check-label small" for="mode-a">
-                  <span class="text-warning">Path A</span> — My logic + filters
-                </label>
-              </div>
-            </div>
-          </div>
-
-          <div class="mb-3">
-            <label class="form-label small">Number of Trials</label>
-            <input type="number" name="n_trials" class="form-control caf-input form-control-sm"
-                   value="50" min="10" max="500">
-            <small class="text-muted">More trials = better results, but slower.</small>
-          </div>
-          <div class="mb-3">
-            <label class="form-label small">Initial Capital ($)</label>
-            <input type="number" name="initial_capital" class="form-control caf-input form-control-sm"
-                   value="10000" step="1000">
-          </div>
-
-          {% if session.entry_mode == 'path_a' and path_a_result.get('top_indicators') %}
-          <div class="mb-3 p-2 bg-dark rounded border small text-muted">
-            <div class="fw-semibold text-light mb-1">Path A Filter Space</div>
-            {% for ind in path_a_result.top_indicators[:5] %}
-            <div><code class="text-warning">{{ ind.col }}</code> {{ ind.operator }} ? — |D|={{ ind.abs_d }}</div>
-            {% endfor %}
-            <div class="mt-1 text-muted">Exit: RSI threshold, period</div>
-          </div>
-          {% else %}
-          {# ── Indicator selector (Path B) ──────────────────────────────── #}
-          <div class="mb-3">
-            <div class="d-flex justify-content-between align-items-center mb-1">
-              <label class="form-label small mb-0">
-                Search Space Indicators
-                <span class="badge bg-secondary ms-1" id="ind-total-badge">
-                  {{ default_indicators | length }}/{{ indicator_catalog | length }}
-                </span>
+        <div class="mb-3">
+          <label class="form-label small">Entry Mode</label>
+          <div class="d-flex gap-3">
+            <div class="form-check">
+              <input class="form-check-input" type="radio" name="mode" value="path_b"
+                     id="mode-b" {% if session.entry_mode != 'path_a' %}checked{% endif %}>
+              <label class="form-check-label small" for="mode-b">
+                <span class="text-info">Free search</span>
               </label>
-              <div class="d-flex gap-2">
-                <button type="button" class="btn btn-link btn-sm p-0 text-muted"
-                        onclick="setAllIndicators(true)" style="font-size:.75rem">All</button>
-                <span class="text-muted" style="font-size:.75rem">|</span>
-                <button type="button" class="btn btn-link btn-sm p-0 text-muted"
-                        onclick="setAllIndicators(false)" style="font-size:.75rem">None</button>
-              </div>
             </div>
-
-            {# Group indicators by category #}
-            {% set categories = [] %}
-            {% for key, spec in indicator_catalog.items() %}
-              {% if spec.cat not in categories %}{% set _ = categories.append(spec.cat) %}{% endif %}
-            {% endfor %}
-
-            <div class="accordion accordion-flush" id="indAccordion"
-                 style="background:transparent;max-height:380px;overflow-y:auto">
-              {% for cat in categories %}
-              {% set cat_id = "ind_" ~ (cat | lower | replace(' ', '_')) %}
-              <div class="accordion-item border-0 mb-1" style="background:transparent">
-                <h2 class="accordion-header" id="hd-{{ cat_id }}">
-                  <button class="accordion-button collapsed py-1 px-2 small fw-semibold"
-                          style="background:#161b22;color:#c9d1d9;border:1px solid #30363d;
-                                 border-radius:4px;font-size:.75rem"
-                          type="button" data-bs-toggle="collapse"
-                          data-bs-target="#acc-{{ cat_id }}"
-                          aria-expanded="false">
-                    {{ cat }}
-                    <span class="ms-auto badge bg-secondary cat-count" data-cat="{{ cat }}"></span>
-                  </button>
-                </h2>
-                <div id="acc-{{ cat_id }}" class="accordion-collapse collapse">
-                  <div class="accordion-body py-1 px-2"
-                       style="background:#0d1117;border:1px solid #30363d;
-                              border-top:none;border-radius:0 0 4px 4px">
-                    {% for key, spec in indicator_catalog.items() %}
-                    {% if spec.cat == cat %}
-                    <div class="form-check form-check-sm mb-1">
-                      <input class="form-check-input ind-checkbox"
-                             type="checkbox" name="indicators"
-                             value="{{ key }}"
-                             id="ind_{{ key }}"
-                             data-cat="{{ cat }}"
-                             {% if key in default_indicators %}checked{% endif %}>
-                      <label class="form-check-label small text-muted"
-                             for="ind_{{ key }}"
-                             style="font-size:.75rem;line-height:1.3">
-                        {{ spec.label }}
-                      </label>
-                    </div>
-                    {% endif %}
-                    {% endfor %}
-                  </div>
-                </div>
-              </div>
-              {% endfor %}
-            </div>
-            <div class="mt-1 text-muted" style="font-size:.7rem">
-              <i class="bi bi-info-circle me-1"></i>
-              Each indicator uses its semantically correct condition
-              (e.g. RSI &lt; threshold, Price &gt; EMA).
-              Optuna decides which to activate and tunes the thresholds.
-            </div>
-          </div>
-          {% endif %}
-
-          {# ── Pair selector ─────────────────────────────────────────────── #}
-          {% if active_pairs %}
-          <div class="mb-3">
-            <div class="d-flex justify-content-between align-items-center mb-1">
-              <label class="form-label small mb-0">
-                Test Pairs
-                <span class="badge bg-secondary ms-1" id="pair-badge">{{ active_pairs | length }} / {{ active_pairs | length }}</span>
+            <div class="form-check">
+              <input class="form-check-input" type="radio" name="mode" value="path_a"
+                     id="mode-a" {% if session.entry_mode == 'path_a' %}checked{% endif %}
+                     {% if not session.entry_logic %}disabled title="Define entry logic first"{% endif %}>
+              <label class="form-check-label small" for="mode-a">
+                <span class="text-warning">My entry logic + filters</span>
               </label>
-              <div class="d-flex gap-2">
-                <button type="button" class="btn btn-link btn-sm p-0 text-muted"
-                        onclick="setAllPairs(true)" style="font-size:.75rem">All</button>
-                <span class="text-muted" style="font-size:.75rem">|</span>
-                <button type="button" class="btn btn-link btn-sm p-0 text-muted"
-                        onclick="setAllPairs(false)" style="font-size:.75rem">None</button>
-              </div>
             </div>
-            <div style="max-height:160px;overflow-y:auto;background:#0d1117;
-                        border:1px solid #30363d;border-radius:4px;padding:6px 8px">
-              {% for pair in active_pairs %}
-              <div class="form-check form-check-sm mb-1">
-                <input class="form-check-input pair-checkbox"
-                       type="checkbox" name="pairs"
-                       value="{{ pair.symbol }}"
-                       id="pair_{{ loop.index }}"
-                       checked>
-                <label class="form-check-label small text-muted"
-                       for="pair_{{ loop.index }}"
-                       style="font-size:.75rem">
-                  {{ pair.symbol }}
-                  <span class="text-muted" style="font-size:.65rem">({{ pair.candle_count | default(0) }} candles)</span>
-                </label>
-              </div>
-              {% endfor %}
-            </div>
-            <small class="text-muted" style="font-size:.7rem">
-              <i class="bi bi-info-circle me-1"></i>Fewer pairs = faster search. More pairs = more robust results.
-            </small>
           </div>
+        </div>
+
+        <div class="mb-3">
+          <label class="form-label small">Number of Trials</label>
+          <input type="number" name="n_trials" class="form-control caf-input form-control-sm"
+                 value="100" min="10" max="2000">
+          <small class="text-muted">More = better results. 100–500 recommended.</small>
+        </div>
+
+        <div class="mb-3">
+          <label class="form-label small">Initial Capital ($)</label>
+          <input type="number" name="initial_capital" class="form-control caf-input form-control-sm"
+                 value="10000" step="1000">
+        </div>
+
+        <div class="mb-3">
+          <label class="form-label small">Min OOS Trades (validity filter)</label>
+          <input type="number" name="min_oos_trades" class="form-control caf-input form-control-sm"
+                 value="5" min="1" max="50">
+          <small class="text-muted">Strategies with fewer OOS trades are discarded as invalid.</small>
+        </div>
+
+        <!-- Multi-objective toggle -->
+        <div class="form-check mb-3">
+          <input class="form-check-input" type="checkbox" name="multi_objective" value="1" id="multi_obj">
+          <label class="form-check-label small" for="multi_obj">
+            <strong>Multi-objective (NSGA-II)</strong>
+            <div class="text-muted" style="font-size:11px">
+              Pareto-optimal: maximise Sharpe AND Return simultaneously.
+              Produces a diverse set of non-dominated strategies.
+            </div>
+          </label>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- Indicator selector (Path B free mode) -->
+    <div class="card caf-card mb-3" id="indicator_panel">
+      <div class="card-header caf-card-header">
+        <div class="d-flex justify-content-between align-items-center">
+          <span><i class="bi bi-toggles me-2"></i>Search Space</span>
+          <div class="d-flex gap-2">
+            <button type="button" class="btn btn-link btn-sm p-0 text-muted"
+                    onclick="setAllIndicators(true)" style="font-size:.75rem">All</button>
+            <span class="text-muted" style="font-size:.75rem">|</span>
+            <button type="button" class="btn btn-link btn-sm p-0 text-muted"
+                    onclick="setAllIndicators(false)" style="font-size:.75rem">None</button>
+          </div>
+        </div>
+      </div>
+      <div class="card-body p-2" style="max-height:300px;overflow-y:auto">
+        {% set categories = namespace(list=[]) %}
+        {% for key, spec in indicator_catalog.items() %}
+          {% if spec.cat not in categories.list %}
+            {% set _ = categories.list.append(spec.cat) %}
           {% endif %}
-
-          <button type="submit" class="btn btn-danger w-100"
-                  {% if task and task.status == 'running' %}disabled{% endif %}>
-            <i class="bi bi-search-heart me-1"></i>
-            {% if task and task.status == 'running' %}Searching…{% else %}Find Best Algos{% endif %}
-          </button>
-        </form>
+        {% endfor %}
+        {% for cat in categories.list %}
+        <div class="mb-2">
+          <div class="small text-muted fw-semibold mb-1" style="font-size:10px">{{ cat }}</div>
+          {% for key, spec in indicator_catalog.items() %}{% if spec.cat == cat %}
+          <div class="form-check form-check-inline mb-0" style="margin-right:4px">
+            <input class="form-check-input ind-check" type="checkbox"
+                   name="indicators" value="{{ key }}" id="ind_{{ key }}"
+                   {% if key in default_indicators %}checked{% endif %}
+                   style="width:12px;height:12px">
+            <label class="form-check-label" for="ind_{{ key }}"
+                   style="font-size:11px">
+              {{ spec.label }}
+              {% if ic_result %}
+                {% set top_cols = ic_result.get('top_overall', []) %}
+                {% set ic_val = namespace(v=0) %}
+                {% for r in top_cols %}{% if r.col == key %}{% set ic_val.v = r.max_abs_ic %}{% endif %}{% endfor %}
+                {% if ic_val.v > 0.1 %}
+                <span class="badge bg-success" style="font-size:8px">IC {{ '%.2f'|format(ic_val.v) }}</span>
+                {% elif ic_val.v > 0.05 %}
+                <span class="badge bg-warning text-dark" style="font-size:8px">IC {{ '%.2f'|format(ic_val.v) }}</span>
+                {% endif %}
+              {% endif %}
+            </label>
+          </div>
+          {% endif %}{% endfor %}
+        </div>
+        {% endfor %}
       </div>
     </div>
 
-    <!-- Progress -->
-    <div class="card caf-card mt-3">
-      <div class="card-header caf-card-header"><i class="bi bi-activity me-2"></i>Progress</div>
-      <div class="card-body" id="progress-body"
-           {% if task and task.status == 'running' %}
-           hx-get="{{ url_for('algofinder.status', session_id=session.id) }}"
-           hx-trigger="every 4s"
-           hx-swap="innerHTML"
-           {% endif %}>
-        {% include "partials/task_progress.html" %}
+    <!-- Pair selection -->
+    {% if active_pairs %}
+    <div class="card caf-card mb-3">
+      <div class="card-header caf-card-header d-flex justify-content-between">
+        <span><i class="bi bi-coin me-2"></i>Pairs</span>
+        <div class="d-flex gap-2">
+          <button type="button" class="btn btn-link btn-sm p-0 text-muted"
+                  onclick="setAllPairs(true)" style="font-size:.75rem">All</button>
+          <span class="text-muted" style="font-size:.75rem">|</span>
+          <button type="button" class="btn btn-link btn-sm p-0 text-muted"
+                  onclick="setAllPairs(false)" style="font-size:.75rem">None</button>
+        </div>
       </div>
-    </div>
-  </div>
-
-  {# ── Results column ─────────────────────────────────────────────────────── #}
-  <div class="col-lg-8" id="results-col">
-    {% if results %}
-
-    {# Summary banner #}
-    {% set best = results[0] %}
-    {% if best.oos_return > 0 %}
-    <div class="alert alert-success d-flex align-items-center gap-2 py-2 mb-3">
-      <i class="bi bi-trophy-fill"></i>
-      <div>
-        <strong>Best strategy: {{ '%+.1f%%' | format(best.oos_return) }} OOS return</strong>,
-        Sharpe {{ '%.2f' | format(best.sharpe) }}, Win rate {{ '%.0f%%' | format(best.win_rate * 100) }}
-      </div>
-    </div>
-    {% else %}
-    <div class="alert alert-warning d-flex align-items-center gap-2 py-2 mb-3">
-      <i class="bi bi-exclamation-triangle-fill"></i>
-      <div>
-        <strong>No profitable strategy found OOS.</strong>
-        Best score: {{ '%+.1f%%' | format(best.oos_return) }}.
-        Try: more trials, different indicators, longer data, or fewer pairs.
+      <div class="card-body p-2" style="max-height:150px;overflow-y:auto">
+        {% for p in active_pairs %}
+        <div class="form-check form-check-inline mb-0" style="margin-right:4px">
+          <input class="form-check-input pair-ind-check" type="checkbox"
+                 name="pairs" value="{{ p.symbol }}"
+                 id="afpair_{{ loop.index }}" checked style="width:12px;height:12px">
+          <label class="form-check-label" for="afpair_{{ loop.index }}"
+                 style="font-size:11px">{{ p.symbol }}</label>
+        </div>
+        {% endfor %}
       </div>
     </div>
     {% endif %}
 
-    {# Summary table #}
+    <!-- Run buttons -->
+    <div class="d-grid gap-2 mb-3">
+      <button type="submit" class="btn btn-danger fw-bold"
+              {% if task and task.status == 'running' %}disabled{% endif %}>
+        <i class="bi bi-search-heart-fill me-1"></i>
+        {% if task and task.status == 'running' %}Searching…{% else %}Find Best Strategy{% endif %}
+      </button>
+    </div>
+    </form>
+
+    <form method="post" action="{{ url_for('algofinder.clear', session_id=session.id) }}"
+          onsubmit="return confirm('Clear all saved results?')">
+      <button type="submit" class="btn btn-outline-secondary btn-sm w-100">
+        <i class="bi bi-trash me-1"></i>Clear Results
+      </button>
+    </form>
+
+  </div><!-- /col-left -->
+
+  <!-- ── RIGHT: Progress + Results ─────────────────────────────────── -->
+  <div class="col-lg-8">
+
+    <!-- Progress -->
     <div class="card caf-card mb-3">
+      <div class="card-header caf-card-header"><i class="bi bi-activity me-2"></i>Search Progress</div>
+      <div class="card-body"
+           {% if task and task.status == 'running' %}
+           hx-get="{{ url_for('algofinder.status', session_id=session.id) }}"
+           hx-trigger="every 3s" hx-swap="innerHTML"
+           {% endif %}>
+        {% include "partials/task_progress.html" %}
+        {% if task and task.result %}
+          {% set tr = task.result %}
+          {% if tr.get('regime') %}
+          <div class="mt-2 d-flex gap-2 flex-wrap">
+            <span class="badge bg-dark border">Regime: {{ tr.regime }}</span>
+            <span class="badge bg-dark border">Template: {{ tr.template }}</span>
+            {% if tr.get('ic_guided') %}<span class="badge bg-success">IC-guided</span>{% endif %}
+            {% if tr.get('multi_objective') %}<span class="badge bg-primary">Multi-obj NSGA-II</span>{% endif %}
+          </div>
+          {% endif %}
+        {% endif %}
+      </div>
+    </div>
+
+    <!-- Results table -->
+    {% if results %}
+    <div class="card caf-card">
       <div class="card-header caf-card-header d-flex justify-content-between align-items-center">
-        <span><i class="bi bi-table me-2"></i>Results Summary</span>
-        <small class="text-muted">{{ results | length }} strategies · click row to expand</small>
+        <span><i class="bi bi-trophy-fill me-2 text-warning"></i>Top Strategies</span>
+        <span class="badge bg-secondary">{{ results|length }} found</span>
       </div>
       <div class="card-body p-0">
         <div class="table-responsive">
-          <table class="table table-sm table-hover mb-0" style="font-size:.82rem;color:#c9d1d9">
-            <thead style="background:#161b22;color:#8b949e">
+          <table class="table caf-table table-sm mb-0">
+            <thead>
               <tr>
-                <th class="ps-3">#</th>
-                <th>Strategy</th>
-                <th class="text-end">IS Ret</th>
+                <th>#</th>
+                <th>Name</th>
                 <th class="text-end">OOS Ret</th>
+                <th class="text-end">IS Ret</th>
+                <th class="text-end">WR</th>
+                <th class="text-end">PF</th>
                 <th class="text-end">Sharpe</th>
-                <th class="text-end">Win%</th>
-                <th class="text-end pe-3">Max DD</th>
+                <th class="text-end">Calmar</th>
+                <th class="text-end">Pairs</th>
+                <th class="text-end">Template</th>
+                <th></th>
               </tr>
             </thead>
             <tbody>
               {% for r in results %}
-              <tr style="cursor:pointer;border-bottom:1px solid #30363d"
-                  onclick="toggleDetail('detail-{{ loop.index }}')">
-                <td class="ps-3">
-                  <span class="badge bg-{{ 'warning text-dark' if loop.index == 1 else 'secondary' }}">
-                    #{{ r.rank }}
+              <tr>
+                <td>
+                  {% if r.rank == 1 %}<span class="text-warning">⭐</span>{% endif %}
+                  {{ r.rank }}
+                </td>
+                <td><small class="text-info">{{ r.strategy_name }}</small></td>
+                <td class="text-end {{ 'text-success fw-bold' if r.oos_return > 0 else 'text-danger' }}">
+                  {{ '%+.1f%%'|format(r.oos_return) }}</td>
+                <td class="text-end {{ 'text-success' if r.is_return > 0 else 'text-danger' }}">
+                  {{ '%+.1f%%'|format(r.is_return) }}</td>
+                <td class="text-end">{{ '%.1f%%'|format(r.win_rate * 100) }}</td>
+                <td class="text-end {{ 'text-success' if r.profit_factor > 1.5 else '' }}">
+                  {{ '%.2f'|format(r.profit_factor) }}</td>
+                <td class="text-end {{ 'text-success' if r.sharpe > 1 else 'text-muted' }}">
+                  {{ '%.2f'|format(r.sharpe) }}</td>
+                <td class="text-end text-muted">
+                  {{ '%.2f'|format(r.calmar_ratio) if r.get('calmar_ratio') else '—' }}</td>
+                <td class="text-end">
+                  <span class="badge {{ 'bg-success' if r.pair_coverage >= 0.5 else 'bg-secondary' }}">
+                    {{ '%.0f%%'|format(r.pair_coverage * 100) if r.get('pair_coverage') else '—' }}
                   </span>
                 </td>
-                <td class="fw-semibold">{{ r.strategy_name }}</td>
-                <td class="text-end {{ 'text-success' if r.is_return > 0 else 'text-danger' }}">
-                  {{ '%+.1f%%' | format(r.is_return) }}
+                <td class="text-end">
+                  <span class="badge bg-dark border small">
+                    {{ r.template if r.get('template') else 'free' }}
+                  </span>
                 </td>
-                <td class="text-end fw-bold {{ 'text-success' if r.oos_return > 0 else 'text-danger' }}">
-                  {{ '%+.1f%%' | format(r.oos_return) }}
+                <td>
+                  <button type="button" class="btn btn-xs btn-outline-secondary"
+                          onclick="showRules({{ loop.index0 }})">Rules</button>
                 </td>
-                <td class="text-end {{ 'text-success' if r.sharpe > 1 else ('text-warning' if r.sharpe > 0 else 'text-danger') }}">
-                  {{ '%.2f' | format(r.sharpe) }}
-                </td>
-                <td class="text-end">{{ '%.0f%%' | format(r.win_rate * 100) }}</td>
-                <td class="text-end text-danger pe-3">-{{ '%.1f%%' | format(r.max_drawdown) }}</td>
               </tr>
-              {# Expandable detail row #}
-              <tr id="detail-{{ loop.index }}" style="display:none;background:#0d1117">
-                <td colspan="7" class="p-3">
-                  {% if r.rules_description %}
-                  <div class="caf-code-block mb-2">
-                    <pre class="mb-0 small text-light" style="white-space:pre-wrap">{{ r.rules_description }}</pre>
-                  </div>
-                  {% endif %}
-                  <details>
-                    <summary class="text-muted small" style="cursor:pointer">Raw Parameters</summary>
-                    <div class="caf-code-block mt-1">
-                      <pre class="mb-0 small text-muted">{{ r.params | tojson(indent=2) }}</pre>
-                    </div>
+              <tr class="rules-row" id="rules_{{ loop.index0 }}" style="display:none">
+                <td colspan="11">
+                  <pre class="p-2 bg-dark rounded small text-light mb-0"
+                       style="font-size:11px;white-space:pre-wrap">{{ r.rules_description }}</pre>
+                  {% if r.params %}
+                  <details class="mt-2">
+                    <summary class="small text-muted">Raw params</summary>
+                    <pre class="small text-muted">{{ r.params | tojson(indent=2) }}</pre>
                   </details>
-                  <div class="text-muted small mt-1">
-                    Saved: {{ r.created_at.strftime('%Y-%m-%d %H:%M') if r.created_at else '—' }}
-                  </div>
+                  {% endif %}
                 </td>
               </tr>
               {% endfor %}
@@ -307,112 +319,44 @@
         </div>
       </div>
     </div>
-
-    {% else %}
-    {# No results yet #}
-    {% if task and task.status == 'done' %}
-    <div class="alert alert-warning d-flex align-items-center gap-2 py-2">
-      <i class="bi bi-exclamation-triangle-fill"></i>
-      <div>
-        Algo Finder completed but all trials had fewer than 5 trades (no strategies saved).
-        Try: <strong>more trials</strong>, <strong>fewer indicators selected</strong>,
-        or ensure your pairs have enough candles.
-      </div>
-    </div>
     {% else %}
     <div class="text-center py-5 text-muted">
       <i class="bi bi-search-heart display-3"></i>
-      <p class="mt-3">No results yet. Run the Algo Finder to discover strategies.</p>
-      <div class="row g-3 mt-2 text-start">
-        {% set feats = [
-          ('bi-cpu', '#58a6ff', 'Optuna TPE Sampler', 'Bayesian search — finds good regions fast without brute force.'),
-          ('bi-shield-check', '#3fb950', 'OOS Validation', 'Walk-forward out-of-sample validation prevents overfitting.'),
-          ('bi-diagram-3', '#ffa657', 'Multi-Pair Testing', 'Test on any subset of pairs — pick fast (1–5) or thorough (all).'),
-          ('bi-list-ol', '#d2a8ff', 'Top-5 Output', 'Best 5 combinations saved with full rule descriptions.'),
-        ] %}
-        {% for icon, color, title, desc in feats %}
-        <div class="col-sm-6">
-          <div class="d-flex gap-2">
-            <i class="bi {{ icon }}" style="color:{{ color }};font-size:1.2rem;flex-shrink:0;margin-top:2px"></i>
-            <div>
-              <div class="fw-semibold text-light">{{ title }}</div>
-              <small class="text-muted">{{ desc }}</small>
-            </div>
-          </div>
-        </div>
-        {% endfor %}
-      </div>
+      <p class="mt-3">No strategies found yet. Launch the Algo Finder to discover profitable strategies.</p>
+      <p class="small">Tip: Run IC Analysis first for smarter, IC-guided search.</p>
     </div>
     {% endif %}
-    {% endif %}
-  </div>
-</div>
+
+  </div><!-- /col-right -->
+</div><!-- /row -->
 {% endblock %}
 
 {% block scripts %}
 <script>
-function updateCatCounts() {
-  document.querySelectorAll('.cat-count').forEach(badge => {
-    const cat = badge.dataset.cat;
-    const boxes = document.querySelectorAll(`.ind-checkbox[data-cat="${cat}"]`);
-    const checked = [...boxes].filter(b => b.checked).length;
-    badge.textContent = `${checked}/${boxes.length}`;
-    badge.className = `ms-auto badge cat-count ${checked > 0 ? 'bg-info text-dark' : 'bg-secondary'}`;
-  });
-  // Update total badge
-  const allBoxes = document.querySelectorAll('.ind-checkbox');
-  const totalChecked = [...allBoxes].filter(b => b.checked).length;
-  const totalBadge = document.getElementById('ind-total-badge');
-  if (totalBadge) {
-    totalBadge.textContent = `${totalChecked}/${allBoxes.length}`;
-    totalBadge.className = `badge ms-1 ${totalChecked > 0 ? 'bg-info text-dark' : 'bg-secondary'}`;
-  }
+function setAllIndicators(checked) {
+  document.querySelectorAll('.ind-check').forEach(cb => cb.checked = checked);
 }
-function setAllIndicators(state) {
-  document.querySelectorAll('.ind-checkbox').forEach(b => b.checked = state);
-  updateCatCounts();
+function setAllPairs(checked) {
+  document.querySelectorAll('.pair-ind-check').forEach(cb => cb.checked = checked);
 }
-function updatePairBadge() {
-  const allPairs = document.querySelectorAll('.pair-checkbox');
-  const checkedPairs = [...allPairs].filter(b => b.checked).length;
-  const badge = document.getElementById('pair-badge');
-  if (badge) {
-    badge.textContent = `${checkedPairs} / ${allPairs.length}`;
-    badge.className = `badge ms-1 ${checkedPairs > 0 ? 'bg-info text-dark' : 'bg-danger'}`;
-  }
+function showRules(idx) {
+  const row = document.getElementById('rules_' + idx);
+  row.style.display = row.style.display === 'none' ? '' : 'none';
 }
-function setAllPairs(state) {
-  document.querySelectorAll('.pair-checkbox').forEach(b => b.checked = state);
-  updatePairBadge();
-}
-function toggleDetail(id) {
-  const row = document.getElementById(id);
-  if (row) row.style.display = row.style.display === 'none' ? 'table-row' : 'none';
-}
-
-document.addEventListener('DOMContentLoaded', () => {
-  updateCatCounts();
-  updatePairBadge();
-  document.querySelectorAll('.ind-checkbox').forEach(b =>
-    b.addEventListener('change', updateCatCounts)
-  );
-  document.querySelectorAll('.pair-checkbox').forEach(b =>
-    b.addEventListener('change', updatePairBadge)
-  );
-
-  // Auto-reload the page when the background task finishes, so results appear.
-  const progressBody = document.getElementById('progress-body');
-  if (progressBody) {
-    progressBody.addEventListener('htmx:afterSwap', function() {
-      const done  = this.querySelector('.text-success');
-      const error = this.querySelector('.bi-x-circle-fill');
-      const cancelled = this.querySelector('.bi-stop-circle-fill');
-      if (done || error || cancelled) {
-        // Task finished — reload after a short delay to show results
-        setTimeout(() => window.location.reload(), 1200);
-      }
+// When a template is selected, auto-check matching indicators
+document.querySelectorAll('input[name="template"]').forEach(radio => {
+  radio.addEventListener('change', function() {
+    const templateIndicators = {
+      {% for key, tmpl in strategy_templates.items() %}
+      "{{ key }}": {{ tmpl.indicators | tojson if tmpl.indicators else 'null' }},
+      {% endfor %}
+    };
+    const sel = templateIndicators[this.value];
+    if (!sel) return;  // free mode — don't change
+    document.querySelectorAll('.ind-check').forEach(cb => {
+      cb.checked = sel.includes(cb.value);
     });
-  }
+  });
 });
 </script>
 {% endblock %}
