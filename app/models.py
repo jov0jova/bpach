@@ -692,17 +692,15 @@ def save_entry_analysis_result(db_path, session_id: str, result: dict) -> None:
 
 def list_algo_results(db_path, session_id: str) -> list:
     con = _conn(db_path)
-    rows = con.execute("""
+    cur = con.execute("""
         SELECT * FROM algo_results WHERE session_id=? ORDER BY rank
-    """, [session_id]).fetchall()
+    """, [session_id])
+    col_names = [desc[0] for desc in cur.description]
+    rows = cur.fetchall()
     con.close()
-    cols = ["id","session_id","run_id","rank","strategy_name","params",
-            "rules_description","is_return","oos_return","win_rate","sharpe",
-            "max_drawdown","profit_factor","calmar_ratio","sortino_ratio",
-            "expectancy","pair_coverage","regime","template","created_at"]
     result = []
     for r in rows:
-        d = dict(zip(cols[:len(r)], r))
+        d = dict(zip(col_names, r))
         for k in ["profit_factor","calmar_ratio","sortino_ratio","expectancy","pair_coverage"]:
             d.setdefault(k, 0)
         d.setdefault("regime", "all")
