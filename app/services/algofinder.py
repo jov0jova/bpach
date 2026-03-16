@@ -942,7 +942,7 @@ def run_algofinder(task_id: str, db_path: Path, session_id: str,
                 htf_found_flag[0] = True
         return df
 
-    sample_pairs = active[:50]
+    sample_pairs = active[:config.get("max_pairs", 30)]
     workers = min((os.cpu_count() or 4) * 4, len(sample_pairs))
     with ThreadPoolExecutor(max_workers=workers) as exe:
         for result in exe.map(_load_pair, sample_pairs):
@@ -1001,7 +1001,7 @@ def run_algofinder(task_id: str, db_path: Path, session_id: str,
             progress(count, n_trials,
                      f"Trial {count}/{n_trials} — {best_str}")
 
-    n_jobs = (os.cpu_count() or 1) * 2
+    n_jobs = min(config.get("n_jobs", 2), (os.cpu_count() or 1) * 2)
     if multi_obj:
         study.optimize(
             lambda t: _objective_multi(t, dfs, config, selected,

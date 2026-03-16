@@ -104,6 +104,29 @@
           <small class="text-muted">Strategies with fewer OOS trades are discarded as invalid.</small>
         </div>
 
+        <div class="row g-2 mb-3">
+          <div class="col-6">
+            <label class="form-label small">Parallel Workers</label>
+            <select name="n_jobs" class="form-select caf-input form-select-sm">
+              <option value="1">1 — least RAM</option>
+              <option value="2" selected>2 — balanced</option>
+              <option value="4">4 — faster</option>
+              <option value="8">8 — max speed</option>
+            </select>
+            <small class="text-muted">Lower = less RAM. Crash? Set to 1.</small>
+          </div>
+          <div class="col-6">
+            <label class="form-label small">Max Pairs to Test</label>
+            <select name="max_pairs" class="form-select caf-input form-select-sm">
+              <option value="10">10 — fast / low RAM</option>
+              <option value="20">20</option>
+              <option value="30" selected>30 — balanced</option>
+              <option value="50">50 — thorough</option>
+            </select>
+            <small class="text-muted">Each pair ×workers held in RAM.</small>
+          </div>
+        </div>
+
         <!-- Multi-objective toggle -->
         <div class="form-check mb-3">
           <input class="form-check-input" type="checkbox" name="multi_objective" value="1" id="multi_obj">
