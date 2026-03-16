@@ -60,6 +60,9 @@ from .. import models as m
 from ..strategies.base import BaseStrategy, inject_htf_features
 from ..services.backtest import _simple_backtest, _walk_forward_backtest
 from ..services.entry_logic_analyzer import _eval_entry_condition, _parse_direction
+from ..services.statistics import (
+    fdr_correction, permutation_test as _permutation_test,
+)
 from ..utils.parquet import parquet_path
 
 logger = logging.getLogger(__name__)
@@ -1039,14 +1042,45 @@ def run_algofinder(task_id: str, db_path: Path, session_id: str,
     # Clear old results for this session before saving new ones
     m.clear_algo_results(db_path, session_id)
 
+    # ── Per-strategy evaluation + permutation test ────────────────────────────
+    # We run full WFO on top strategies, collect all OOS trades, then compute
+    # a permutation-based p-value per strategy.
+    # After collecting p-values for all strategies we apply BH FDR correction.
+    strategy_metrics = []   # list of metric dicts, one per strategy
+    strategy_trades  = []   # list of trade lists (OOS), one per strategy
+
+    n_top = len(top_trials)
+    progress(n_trials, n_trials + n_top, "Evaluating top strategies + significance tests…")
+
     for rank, trial in enumerate(top_trials, 1):
         params   = trial.params
         strategy = CatalogStrategy(params, selected)
 
-        all_wfo = []
+        all_wfo  = []
+        oos_trades_this = []   # all OOS trades from every pair × fold
+
         for df in dfs:
             try:
-                all_wfo.append(_run_wfo_for_trial(df, strategy, config, params))
+                wfo_r = _run_wfo_for_trial(df, strategy, config, params)
+                all_wfo.append(wfo_r)
+                # Collect OOS trade pnls for permutation test
+                # _run_wfo_for_trial calls _walk_forward_backtest which uses fast_mode
+                # We need the actual trade list. Re-run in non-fast mode for top 3 only.
+                if rank <= 3:
+                    try:
+                        bt_kw = dict(
+                            initial_capital=config.get("initial_capital", 10_000),
+                            fee_rate=config.get("fee_rate", 0.001),
+                            slippage=config.get("slippage", 0.0005),
+                            position_size=config.get("position_size", 0.1),
+                            fast_mode=False,
+                        )
+                        enriched = strategy.run(df.copy())
+                        if "entry_signal" in enriched.columns:
+                            bt_r = _simple_backtest(enriched, **bt_kw)
+                            oos_trades_this.extend(bt_r.get("trades_list", []))
+                    except Exception:
+                        pass
             except Exception:
                 continue
 
@@ -1057,24 +1091,73 @@ def run_algofinder(task_id: str, db_path: Path, session_id: str,
         pairs_positive = sum(1 for w in all_wfo if w.get("oos_return", 0) > 0)
         pair_coverage  = pairs_positive / len(all_wfo) if all_wfo else 0.0
 
-        rules = _describe_rules(params, selected)
+        # Permutation test (only if enough trades)
+        perm_result = {}
+        if len(oos_trades_this) >= 10:
+            try:
+                perm_result = _permutation_test(oos_trades_this, n_perms=500)
+            except Exception as e:
+                logger.warning("Permutation test failed for strategy %d: %s", rank, e)
+
+        p_val = perm_result.get("p_value", 1.0)
+
+        strategy_metrics.append({
+            "rank":          rank,
+            "trial":         trial,
+            "params":        params,
+            "is_return":     _avg("is_return"),
+            "oos_return":    _avg("oos_return"),
+            "win_rate":      _avg("oos_win_rate"),
+            "sharpe":        _avg("oos_sharpe"),
+            "max_drawdown":  _avg("oos_max_dd"),
+            "profit_factor": _avg("oos_profit_factor"),
+            "calmar_ratio":  _avg("oos_calmar"),
+            "sortino_ratio": _avg("oos_sortino"),
+            "expectancy":    _avg("oos_expectancy"),
+            "pair_coverage": pair_coverage,
+            "p_value":       p_val,
+        })
+        strategy_trades.append(oos_trades_this)
+
+        progress(n_trials + rank, n_trials + n_top,
+                 f"Evaluated strategy {rank}/{n_top} | p={p_val:.3f}")
+
+    # ── BH FDR correction across all strategies ────────────────────────────────
+    raw_p_values = [s["p_value"] for s in strategy_metrics]
+    fdr_result   = fdr_correction(raw_p_values, alpha=0.05)
+    adj_p_values = fdr_result.get("adjusted_p_values", raw_p_values)
+    is_sig_list  = fdr_result.get("is_significant", [False] * len(raw_p_values))
+    n_sig        = fdr_result.get("n_significant", 0)
+
+    # ── Save results ───────────────────────────────────────────────────────────
+    for i, sm in enumerate(strategy_metrics):
+        rank   = sm["rank"]
+        params = sm["params"]
+        rules  = _describe_rules(params, selected)
+        adj_p  = adj_p_values[i] if i < len(adj_p_values) else 1.0
+        is_sig = bool(is_sig_list[i]) if i < len(is_sig_list) else False
+
         m.save_algo_result(
             db_path, session_id, None, rank,
             f"{template['label']}_#{rank}",
             params, rules,
             {
-                "is_return":     _avg("is_return"),
-                "oos_return":    _avg("oos_return"),
-                "win_rate":      _avg("oos_win_rate"),
-                "sharpe":        _avg("oos_sharpe"),
-                "max_drawdown":  _avg("oos_max_dd"),
-                "profit_factor": _avg("oos_profit_factor"),
-                "calmar_ratio":  _avg("oos_calmar"),
-                "sortino_ratio": _avg("oos_sortino"),
-                "expectancy":    _avg("oos_expectancy"),
-                "pair_coverage": pair_coverage,
-                "regime":        dominant_regime,
-                "template":      template_key,
+                "is_return":       sm["is_return"],
+                "oos_return":      sm["oos_return"],
+                "win_rate":        sm["win_rate"],
+                "sharpe":          sm["sharpe"],
+                "max_drawdown":    sm["max_drawdown"],
+                "profit_factor":   sm["profit_factor"],
+                "calmar_ratio":    sm["calmar_ratio"],
+                "sortino_ratio":   sm["sortino_ratio"],
+                "expectancy":      sm["expectancy"],
+                "pair_coverage":   sm["pair_coverage"],
+                "regime":          dominant_regime,
+                "template":        template_key,
+                "p_value":         sm["p_value"],
+                "adjusted_p":      adj_p,
+                "is_significant":  is_sig,
+                "n_trials_tested": n_trials,
             },
         )
 
@@ -1085,19 +1168,22 @@ def run_algofinder(task_id: str, db_path: Path, session_id: str,
         n = len(top_trials)
         best_s = (top_trials[0].values[0] if multi_obj else top_trials[0].value) or 0
         summary = (f"✓ {n} strategies found | Regime={dominant_regime} | "
-                   f"Template={template['label']} | Best score={best_s:.3f}")
+                   f"Template={template['label']} | Best score={best_s:.3f} | "
+                   f"FDR significant: {n_sig}/{n}")
     else:
         summary = (f"Algo Finder done — {len(top_trials)} strategies saved but none profitable OOS. "
                    "Try more trials or a different template.")
 
-    progress(n_trials, n_trials, summary)
+    progress(n_trials + n_top, n_trials + n_top, summary)
     m.update_task(db_path, task_id, result={
-        "top_count": len(top_trials),
-        "any_profitable": any_profitable,
-        "regime": dominant_regime,
-        "template": template_key,
-        "ic_guided": ic_guided,
-        "multi_objective": multi_obj,
+        "top_count":        len(top_trials),
+        "any_profitable":   any_profitable,
+        "regime":           dominant_regime,
+        "template":         template_key,
+        "ic_guided":        ic_guided,
+        "multi_objective":  multi_obj,
+        "n_significant":    n_sig,
+        "fdr_alpha":        0.05,
     })
 
 

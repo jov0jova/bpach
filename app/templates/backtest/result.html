@@ -21,7 +21,27 @@
   </div>
 </div>
 
-<!-- Metric cards -->
+<!-- ── Statistical Significance Banner ─────────────────────────────────────── -->
+{% set p_val = run.get('p_value', 1.0) if run is mapping else (run.p_value if run.p_value is defined else 1.0) %}
+{% set is_sig = run.get('is_significant', False) if run is mapping else (run.is_significant if run.is_significant is defined else False) %}
+{% if p_val is not none and p_val < 1.0 %}
+<div class="alert {% if is_sig %}alert-success{% elif p_val < 0.1 %}alert-warning{% else %}alert-danger{% endif %} d-flex align-items-center gap-3 py-2 mb-3">
+  <i class="bi {% if is_sig %}bi-shield-check{% else %}bi-exclamation-triangle{% endif %} fs-4"></i>
+  <div>
+    <strong>
+      {% if is_sig %}Strategy is statistically significant{% else %}Strategy is NOT statistically significant{% endif %}
+    </strong>
+    — Permutation test p-value: <code>{{ '%.4f' | format(p_val) }}</code>
+    {% if is_sig %}
+      (p &lt; 0.05 — returns are distinguishable from random)
+    {% else %}
+      (p ≥ 0.05 — returns may be indistinguishable from noise at α=0.05)
+    {% endif %}
+  </div>
+</div>
+{% endif %}
+
+<!-- ── Core metric cards ───────────────────────────────────────────────────── -->
 <div class="row g-3 mb-4">
   {% set metrics = [
     ('Total Trades', run.total_trades, '', 'bi-arrow-left-right', '#58a6ff'),
@@ -44,7 +64,257 @@
   {% endfor %}
 </div>
 
-<!-- PnL Distribution chart -->
+<!-- ── TRUE HOLDOUT section ───────────────────────────────────────────────── -->
+{% set holdout_return = run.get('holdout_return', 0) if run is mapping else (run.holdout_return if run.holdout_return is defined else 0) %}
+{% set holdout_trades = run.get('holdout_trades', 0) if run is mapping else (run.holdout_trades if run.holdout_trades is defined else 0) %}
+{% if holdout_trades > 0 %}
+<div class="card caf-card mb-4 border-warning">
+  <div class="card-header caf-card-header d-flex justify-content-between align-items-center">
+    <span><i class="bi bi-lock me-2 text-warning"></i>True Holdout Result
+      <span class="badge bg-warning text-dark ms-2">Never seen during optimization</span>
+    </span>
+    <small class="text-muted">Last {{ (task_result.get('holdout_pct', 0.20) * 100) | int }}% of data</small>
+  </div>
+  <div class="card-body">
+    <p class="text-muted small mb-3">
+      The holdout period was <strong>completely excluded</strong> from all WFO folds and Optuna trials.
+      This is the most honest estimate of out-of-sample performance.
+      If this diverges sharply from IS/OOS metrics, the strategy is likely overfit.
+    </p>
+    <div class="row g-3">
+      {% set hr = run.get('holdout_return', 0) if run is mapping else run.holdout_return %}
+      {% set hs = run.get('holdout_sharpe', 0) if run is mapping else run.holdout_sharpe %}
+      {% set hd = run.get('holdout_max_dd', 0) if run is mapping else run.holdout_max_dd %}
+      {% set hw = run.get('holdout_win_rate', 0) if run is mapping else run.holdout_win_rate %}
+      {% for label, val, fmt, good_positive in [
+        ('Holdout Return',    hr,  '%+.1f%%', True),
+        ('Holdout Sharpe',    hs,  '%.2f',    True),
+        ('Holdout Max DD',    hd,  '-%.1f%%', False),
+        ('Holdout Win Rate',  hw,  '%.1f%%',  True),
+        ('Holdout Trades',    holdout_trades, '%d', None),
+      ] %}
+      <div class="col-6 col-md">
+        <div class="text-center p-2 rounded" style="background:rgba(255,255,255,0.04)">
+          <div class="h5 mb-0
+            {% if good_positive is not none %}
+              {% if (good_positive and val > 0) or (not good_positive and val < 20) %}text-success{% else %}text-danger{% endif %}
+            {% endif %}">
+            {% if fmt == '%d' %}{{ val }}{% else %}{{ fmt | format(val) }}{% endif %}
+          </div>
+          <small class="text-muted">{{ label }}</small>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+    <!-- Overfitting warning -->
+    {% set is_ret = run.get('total_return', 0) if run is mapping else run.total_return %}
+    {% if is_ret > 5 and hr < -2 %}
+    <div class="alert alert-danger mt-3 mb-0 py-2 small">
+      <i class="bi bi-exclamation-triangle me-1"></i>
+      <strong>Overfitting warning:</strong> IS return is {{ '%+.1f%%'|format(is_ret) }} but holdout is {{ '%+.1f%%'|format(hr) }}.
+      The strategy's in-sample performance does not generalise. Do not deploy.
+    </div>
+    {% elif hr > 0 and is_ret > 0 %}
+    <div class="alert alert-success mt-3 mb-0 py-2 small">
+      <i class="bi bi-check-circle me-1"></i>
+      Holdout is positive — consistent with in-sample. Strategy shows generalisation.
+    </div>
+    {% endif %}
+  </div>
+</div>
+{% endif %}
+
+<!-- ── Benchmark Comparison ───────────────────────────────────────────────── -->
+{% set bm_return = run.get('benchmark_return', 0) if run is mapping else (run.benchmark_return if run.benchmark_return is defined else 0) %}
+{% set alpha = run.get('alpha', 0) if run is mapping else (run.alpha if run.alpha is defined else 0) %}
+{% if bm_return != 0 %}
+<div class="card caf-card mb-4">
+  <div class="card-header caf-card-header">
+    <i class="bi bi-bar-chart-line me-2"></i>Benchmark Comparison (Buy &amp; Hold)
+  </div>
+  <div class="card-body">
+    <p class="text-muted small mb-3">
+      Comparison against a passive buy-and-hold strategy over the same period.
+      A strategy that underperforms buy-and-hold is destroying value — you'd be better off just holding the asset.
+    </p>
+    <div class="row g-3 text-center">
+      <div class="col">
+        <div class="h5 mb-0 {{ 'text-success' if run.total_return > 0 else 'text-danger' }}">{{ '%+.1f%%'|format(run.total_return) }}</div>
+        <small class="text-muted">Strategy IS Return</small>
+      </div>
+      <div class="col">
+        <div class="h5 mb-0 {{ 'text-success' if bm_return > 0 else 'text-danger' }}">{{ '%+.1f%%'|format(bm_return) }}</div>
+        <small class="text-muted">Buy &amp; Hold Return</small>
+      </div>
+      <div class="col">
+        <div class="h5 mb-0 {{ 'text-success' if alpha > 0 else 'text-danger' }}">{{ '%+.1f%%'|format(alpha) }}</div>
+        <small class="text-muted">Alpha (excess return)</small>
+      </div>
+      {% set bm_sharpe = run.get('benchmark_sharpe', 0) if run is mapping else (run.benchmark_sharpe if run.benchmark_sharpe is defined else 0) %}
+      <div class="col">
+        <div class="h5 mb-0 {{ 'text-success' if run.sharpe_ratio > bm_sharpe else 'text-danger' }}">{{ '%.2f'|format(run.sharpe_ratio) }} vs {{ '%.2f'|format(bm_sharpe) }}</div>
+        <small class="text-muted">Strategy vs B&amp;H Sharpe</small>
+      </div>
+    </div>
+    {% if alpha < 0 %}
+    <div class="alert alert-warning mt-3 mb-0 py-2 small">
+      <i class="bi bi-exclamation-triangle me-1"></i>
+      <strong>Underperforming buy-and-hold by {{ '%+.1f%%'|format(alpha) }}.</strong>
+      This strategy generates negative alpha — a passive investment would have performed better.
+    </div>
+    {% endif %}
+  </div>
+</div>
+{% endif %}
+
+<!-- ── Monte Carlo Simulation ─────────────────────────────────────────────── -->
+{% set mc_p5 = run.get('mc_return_p5', 0) if run is mapping else (run.mc_return_p5 if run.mc_return_p5 is defined else 0) %}
+{% set mc_p50 = run.get('mc_return_p50', 0) if run is mapping else (run.mc_return_p50 if run.mc_return_p50 is defined else 0) %}
+{% set mc_p95 = run.get('mc_return_p95', 0) if run is mapping else (run.mc_return_p95 if run.mc_return_p95 is defined else 0) %}
+{% if mc_p50 != 0 %}
+<div class="card caf-card mb-4">
+  <div class="card-header caf-card-header">
+    <i class="bi bi-dice-3 me-2"></i>Monte Carlo Simulation (2,000 paths)
+  </div>
+  <div class="card-body">
+    <p class="text-muted small mb-3">
+      Trade returns were resampled with replacement 2,000 times to generate a distribution of outcomes.
+      Your backtest shows <em>one</em> path through history — the 5th percentile is your realistic worst case.
+    </p>
+    <div class="row g-3 mb-3">
+      <!-- Return percentiles -->
+      <div class="col-md-4">
+        <div class="p-3 rounded" style="background:rgba(255,255,255,0.04)">
+          <div class="small text-muted mb-2 fw-semibold">Total Return Distribution</div>
+          <div class="d-flex justify-content-between small mb-1">
+            <span class="text-danger">5th pct (worst)</span>
+            <span class="{{ 'text-success' if mc_p5 > 0 else 'text-danger' }}">{{ '%+.1f%%'|format(mc_p5) }}</span>
+          </div>
+          <div class="d-flex justify-content-between small mb-1">
+            <span class="text-muted">50th pct (median)</span>
+            <span class="{{ 'text-success' if mc_p50 > 0 else 'text-danger' }}">{{ '%+.1f%%'|format(mc_p50) }}</span>
+          </div>
+          <div class="d-flex justify-content-between small">
+            <span class="text-success">95th pct (best)</span>
+            <span class="{{ 'text-success' if mc_p95 > 0 else 'text-danger' }}">{{ '%+.1f%%'|format(mc_p95) }}</span>
+          </div>
+        </div>
+      </div>
+      <!-- Sharpe percentiles -->
+      {% set mcs_p5 = run.get('mc_sharpe_p5', 0) if run is mapping else (run.mc_sharpe_p5 if run.mc_sharpe_p5 is defined else 0) %}
+      {% set mcs_p50 = run.get('mc_sharpe_p50', 0) if run is mapping else (run.mc_sharpe_p50 if run.mc_sharpe_p50 is defined else 0) %}
+      {% set mcs_p95 = run.get('mc_sharpe_p95', 0) if run is mapping else (run.mc_sharpe_p95 if run.mc_sharpe_p95 is defined else 0) %}
+      <div class="col-md-4">
+        <div class="p-3 rounded" style="background:rgba(255,255,255,0.04)">
+          <div class="small text-muted mb-2 fw-semibold">Sharpe Ratio Distribution</div>
+          <div class="d-flex justify-content-between small mb-1">
+            <span class="text-danger">5th pct</span>
+            <span class="{{ 'text-success' if mcs_p5 > 0 else 'text-danger' }}">{{ '%.2f'|format(mcs_p5) }}</span>
+          </div>
+          <div class="d-flex justify-content-between small mb-1">
+            <span class="text-muted">50th pct (median)</span>
+            <span class="{{ 'text-success' if mcs_p50 > 0 else 'text-danger' }}">{{ '%.2f'|format(mcs_p50) }}</span>
+          </div>
+          <div class="d-flex justify-content-between small">
+            <span class="text-success">95th pct</span>
+            <span class="{{ 'text-success' if mcs_p95 > 0 else 'text-danger' }}">{{ '%.2f'|format(mcs_p95) }}</span>
+          </div>
+        </div>
+      </div>
+      <!-- Max DD percentiles (high = bad) -->
+      {% set mcd_p5 = run.get('mc_maxdd_p5', 0) if run is mapping else (run.mc_maxdd_p5 if run.mc_maxdd_p5 is defined else 0) %}
+      {% set mcd_p50 = run.get('mc_maxdd_p50', 0) if run is mapping else (run.mc_maxdd_p50 if run.mc_maxdd_p50 is defined else 0) %}
+      {% set mcd_p95 = run.get('mc_maxdd_p95', 0) if run is mapping else (run.mc_maxdd_p95 if run.mc_maxdd_p95 is defined else 0) %}
+      <div class="col-md-4">
+        <div class="p-3 rounded" style="background:rgba(255,255,255,0.04)">
+          <div class="small text-muted mb-2 fw-semibold">Max Drawdown Distribution</div>
+          <div class="d-flex justify-content-between small mb-1">
+            <span class="text-success">5th pct (best)</span>
+            <span>-{{ '%.1f%%'|format(mcd_p5) }}</span>
+          </div>
+          <div class="d-flex justify-content-between small mb-1">
+            <span class="text-muted">50th pct (median)</span>
+            <span>-{{ '%.1f%%'|format(mcd_p50) }}</span>
+          </div>
+          <div class="d-flex justify-content-between small">
+            <span class="text-danger">95th pct (worst)</span>
+            <span class="text-danger">-{{ '%.1f%%'|format(mcd_p95) }}</span>
+          </div>
+        </div>
+      </div>
+    </div>
+    <!-- Probability bars -->
+    {% set prob_profitable = task_result.get('mc', {}).get('prob_profitable', 0) %}
+    {% set prob_ruin = task_result.get('mc', {}).get('prob_ruin', 0) %}
+    {% if prob_profitable > 0 %}
+    <div class="row g-2">
+      <div class="col-md-6">
+        <label class="small text-muted">Probability of positive return</label>
+        <div class="progress" style="height:20px">
+          <div class="progress-bar bg-success" style="width:{{ (prob_profitable*100)|int }}%">
+            {{ '%.1f%%'|format(prob_profitable * 100) }}
+          </div>
+        </div>
+      </div>
+      <div class="col-md-6">
+        <label class="small text-muted">Probability of >50% loss (ruin)</label>
+        <div class="progress" style="height:20px">
+          <div class="progress-bar bg-danger" style="width:{{ [prob_ruin*100, 100]|min|int }}%">
+            {{ '%.2f%%'|format(prob_ruin * 100) }}
+          </div>
+        </div>
+      </div>
+    </div>
+    {% endif %}
+  </div>
+</div>
+{% endif %}
+
+<!-- ── Portfolio-level metrics ─────────────────────────────────────────────── -->
+{% set port_sharpe = run.get('portfolio_sharpe', 0) if run is mapping else (run.portfolio_sharpe if run.portfolio_sharpe is defined else 0) %}
+{% set port_return = run.get('portfolio_return', 0) if run is mapping else (run.portfolio_return if run.portfolio_return is defined else 0) %}
+{% set port_maxdd  = run.get('portfolio_maxdd', 0) if run is mapping else (run.portfolio_maxdd if run.portfolio_maxdd is defined else 0) %}
+{% set port_corr   = task_result.get('portfolio', {}).get('pair_correlation_mean', 0) %}
+{% if port_sharpe != 0 or port_return != 0 %}
+<div class="card caf-card mb-4">
+  <div class="card-header caf-card-header">
+    <i class="bi bi-grid me-2"></i>Portfolio-Level Metrics (All Pairs Combined)
+  </div>
+  <div class="card-body">
+    <p class="text-muted small mb-3">
+      Metrics computed by combining equity curves across all {{ task_result.get('pairs_backtested', '—') }} pairs
+      with equal capital allocation. A high inter-pair correlation means diversification is limited.
+    </p>
+    <div class="row g-3 text-center">
+      <div class="col">
+        <div class="h5 mb-0 {{ 'text-success' if port_return > 0 else 'text-danger' }}">{{ '%+.1f%%'|format(port_return) }}</div>
+        <small class="text-muted">Portfolio Return</small>
+      </div>
+      <div class="col">
+        <div class="h5 mb-0 {{ 'text-success' if port_sharpe > 0 else 'text-danger' }}">{{ '%.2f'|format(port_sharpe) }}</div>
+        <small class="text-muted">Portfolio Sharpe</small>
+      </div>
+      <div class="col">
+        <div class="h5 mb-0 text-danger">-{{ '%.1f%%'|format(port_maxdd) }}</div>
+        <small class="text-muted">Portfolio Max DD</small>
+      </div>
+      <div class="col">
+        <div class="h5 mb-0 {{ 'text-warning' if port_corr > 0.7 else 'text-success' }}">{{ '%.2f'|format(port_corr) }}</div>
+        <small class="text-muted">Mean Pair Correlation</small>
+      </div>
+    </div>
+    {% if port_corr > 0.7 %}
+    <div class="alert alert-warning mt-3 mb-0 py-2 small">
+      <i class="bi bi-exclamation-triangle me-1"></i>
+      <strong>High correlation ({{ '%.2f'|format(port_corr) }}):</strong>
+      Pairs are moving together — limited diversification benefit. The portfolio behaves like a single concentrated bet.
+    </div>
+    {% endif %}
+  </div>
+</div>
+{% endif %}
+
+<!-- ── PnL Distribution chart ─────────────────────────────────────────────── -->
 {% if pnl_chart %}
 <div class="card caf-card mb-4">
   <div class="card-header caf-card-header"><i class="bi bi-bar-chart me-2"></i>PnL Distribution</div>
@@ -54,10 +324,51 @@
 </div>
 {% endif %}
 
-<!-- Trade table -->
+<!-- ── Per-pair breakdown ─────────────────────────────────────────────────── -->
+{% set pair_results = task_result.get('pair_results', []) %}
+{% if pair_results %}
+<div class="card caf-card mb-4">
+  <div class="card-header caf-card-header">
+    <i class="bi bi-table me-2"></i>Per-Pair Breakdown
+    <small class="text-muted ms-2">({{ task_result.get('pairs_profitable', 0) }}/{{ pair_results|length }} profitable)</small>
+  </div>
+  <div class="card-body p-0">
+    <div class="table-responsive" style="max-height:350px;overflow-y:auto">
+      <table class="table caf-table table-sm mb-0">
+        <thead class="sticky-top">
+          <tr>
+            <th>Symbol</th>
+            <th class="text-end">Return</th>
+            <th class="text-end">Trades</th>
+            <th class="text-end">Win Rate</th>
+            <th class="text-end">Sharpe</th>
+            <th class="text-end">Max DD</th>
+            <th class="text-end">PF</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for pr in pair_results | sort(attribute='total_return', reverse=True) %}
+          <tr class="{{ 'table-success-subtle' if pr.total_return > 0 else 'table-danger-subtle' }}">
+            <td class="fw-semibold">{{ pr.symbol }}</td>
+            <td class="text-end {{ 'text-success' if pr.total_return > 0 else 'text-danger' }}">{{ '%+.1f%%'|format(pr.total_return) }}</td>
+            <td class="text-end">{{ pr.total_trades }}</td>
+            <td class="text-end">{{ '%.1f%%'|format(pr.win_rate * 100) }}</td>
+            <td class="text-end">{{ '%.2f'|format(pr.sharpe) }}</td>
+            <td class="text-end text-danger">-{{ '%.1f%%'|format(pr.max_dd) }}</td>
+            <td class="text-end">{{ '%.2f'|format(pr.profit_factor) }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+{% endif %}
+
+<!-- ── Trade table ────────────────────────────────────────────────────────── -->
 <div class="card caf-card">
   <div class="card-header caf-card-header d-flex justify-content-between">
-    <span><i class="bi bi-table me-2"></i>Trades ({{ trades | length }}{% if trades | length == 200 %}+{% endif %})</span>
+    <span><i class="bi bi-table me-2"></i>Trades ({{ trades | length }}{% if trades | length == 500 %}+{% endif %})</span>
     <div class="d-flex gap-2">
       <span class="badge bg-success">{{ winners | length }} winners</span>
       <span class="badge bg-danger">{{ losers | length }} losers</span>
@@ -76,6 +387,7 @@
             <th class="text-end">Exit $</th>
             <th class="text-end">PnL %</th>
             <th class="text-end">Bars</th>
+            <th>Reason</th>
             <th>Result</th>
           </tr>
         </thead>
@@ -92,6 +404,7 @@
               {{ '%+.2f%%' | format(t.pnl_pct) }}
             </td>
             <td class="text-end">{{ t.duration_bars }}</td>
+            <td><small class="text-muted">{{ t.exit_reason or '—' }}</small></td>
             <td>
               <span class="badge bg-{{ 'success' if t.is_winner else 'danger' }}">
                 {{ 'WIN' if t.is_winner else 'LOSS' }}
