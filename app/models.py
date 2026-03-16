@@ -165,9 +165,82 @@ def init_db(db_path: str | Path) -> None:
             win_rate        DOUBLE DEFAULT 0,
             sharpe          DOUBLE DEFAULT 0,
             max_drawdown    DOUBLE DEFAULT 0,
+            profit_factor   DOUBLE DEFAULT 0,
+            calmar_ratio    DOUBLE DEFAULT 0,
+            sortino_ratio   DOUBLE DEFAULT 0,
+            expectancy      DOUBLE DEFAULT 0,
+            pair_coverage   DOUBLE DEFAULT 0,
+            regime          TEXT DEFAULT 'all',
+            template        TEXT DEFAULT 'free',
             created_at      TIMESTAMP NOT NULL
         )
     """)
+    # Migrate older algo_results tables missing new columns
+    for col, typedef in [
+        ("profit_factor",  "DOUBLE DEFAULT 0"),
+        ("calmar_ratio",   "DOUBLE DEFAULT 0"),
+        ("sortino_ratio",  "DOUBLE DEFAULT 0"),
+        ("expectancy",     "DOUBLE DEFAULT 0"),
+        ("pair_coverage",  "DOUBLE DEFAULT 0"),
+        ("regime",         "TEXT DEFAULT 'all'"),
+        ("template",       "TEXT DEFAULT 'free'"),
+    ]:
+        try:
+            con.execute(f"ALTER TABLE algo_results ADD COLUMN {col} {typedef}")
+        except Exception:
+            pass
+
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS backtest_configs (
+            id                      TEXT PRIMARY KEY,
+            session_id              TEXT NOT NULL,
+            name                    TEXT NOT NULL DEFAULT 'Default',
+            entry_code              TEXT DEFAULT '',
+            exit_code               TEXT DEFAULT '',
+            selected_pairs          TEXT DEFAULT '[]',
+            initial_capital         DOUBLE DEFAULT 10000,
+            fee_rate                DOUBLE DEFAULT 0.001,
+            slippage                DOUBLE DEFAULT 0.0005,
+            position_sizing         TEXT DEFAULT 'fixed',
+            position_size           DOUBLE DEFAULT 0.1,
+            kelly_fraction          DOUBLE DEFAULT 0.25,
+            atr_risk_pct            DOUBLE DEFAULT 1.0,
+            sl_mode                 TEXT DEFAULT 'none',
+            sl_pct                  DOUBLE DEFAULT 2.0,
+            sl_atr_period           INTEGER DEFAULT 14,
+            sl_atr_multiplier       DOUBLE DEFAULT 2.0,
+            tp_mode                 TEXT DEFAULT 'none',
+            tp_pct                  DOUBLE DEFAULT 4.0,
+            tp_atr_period           INTEGER DEFAULT 14,
+            tp_atr_multiplier       DOUBLE DEFAULT 4.0,
+            tp_rr_ratio             DOUBLE DEFAULT 2.0,
+            trail_mode              TEXT DEFAULT 'none',
+            trail_pct               DOUBLE DEFAULT 2.0,
+            trail_atr_period        INTEGER DEFAULT 14,
+            trail_atr_multiplier    DOUBLE DEFAULT 1.5,
+            wfo_splits              INTEGER DEFAULT 5,
+            wfo_train_ratio         DOUBLE DEFAULT 0.7,
+            created_at              TIMESTAMP NOT NULL,
+            updated_at              TIMESTAMP NOT NULL
+        )
+    """)
+
+    # Extend backtest_runs with richer metrics
+    for col, typedef in [
+        ("profit_factor_oos", "DOUBLE DEFAULT 0"),
+        ("calmar_ratio",      "DOUBLE DEFAULT 0"),
+        ("sortino_ratio",     "DOUBLE DEFAULT 0"),
+        ("expectancy",        "DOUBLE DEFAULT 0"),
+        ("recovery_factor",   "DOUBLE DEFAULT 0"),
+        ("config_id",         "TEXT DEFAULT ''"),
+        ("config_snapshot",   "TEXT DEFAULT '{}'"),
+        ("pairs_backtested",  "INTEGER DEFAULT 0"),
+        ("pairs_profitable",  "INTEGER DEFAULT 0"),
+    ]:
+        try:
+            con.execute(f"ALTER TABLE backtest_runs ADD COLUMN {col} {typedef}")
+        except Exception:
+            pass
 
     con.close()
 
@@ -534,13 +607,22 @@ def save_algo_result(db_path, session_id: str, run_id: str, rank: int,
                      metrics: dict) -> None:
     con = _conn(db_path)
     con.execute("""
-        INSERT INTO algo_results VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+        INSERT INTO algo_results
+            (id, session_id, run_id, rank, strategy_name, params, rules_description,
+             is_return, oos_return, win_rate, sharpe, max_drawdown,
+             profit_factor, calmar_ratio, sortino_ratio, expectancy,
+             pair_coverage, regime, template, created_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     """, [
         str(uuid.uuid4()), session_id, run_id, rank, strategy_name,
         json.dumps(params), rules_description,
         metrics.get("is_return", 0), metrics.get("oos_return", 0),
         metrics.get("win_rate", 0), metrics.get("sharpe", 0),
         metrics.get("max_drawdown", 0),
+        metrics.get("profit_factor", 0), metrics.get("calmar_ratio", 0),
+        metrics.get("sortino_ratio", 0), metrics.get("expectancy", 0),
+        metrics.get("pair_coverage", 0),
+        metrics.get("regime", "all"), metrics.get("template", "free"),
         datetime.now(timezone.utc)
     ])
     con.close()
@@ -616,13 +698,146 @@ def list_algo_results(db_path, session_id: str) -> list:
     con.close()
     cols = ["id","session_id","run_id","rank","strategy_name","params",
             "rules_description","is_return","oos_return","win_rate","sharpe",
-            "max_drawdown","created_at"]
+            "max_drawdown","profit_factor","calmar_ratio","sortino_ratio",
+            "expectancy","pair_coverage","regime","template","created_at"]
     result = []
     for r in rows:
-        d = dict(zip(cols, r))
+        d = dict(zip(cols[:len(r)], r))
+        for k in ["profit_factor","calmar_ratio","sortino_ratio","expectancy","pair_coverage"]:
+            d.setdefault(k, 0)
+        d.setdefault("regime", "all")
+        d.setdefault("template", "free")
         try:
             d["params"] = json.loads(d["params"])
         except Exception:
             d["params"] = {}
+        result.append(d)
+    return result
+
+
+def clear_algo_results(db_path, session_id: str) -> None:
+    con = _conn(db_path)
+    con.execute("DELETE FROM algo_results WHERE session_id=?", [session_id])
+    con.close()
+
+
+# ── Backtest Configs ──────────────────────────────────────────────────────────
+
+_BT_CONFIG_COLS = [
+    "id", "session_id", "name", "entry_code", "exit_code", "selected_pairs",
+    "initial_capital", "fee_rate", "slippage", "position_sizing", "position_size",
+    "kelly_fraction", "atr_risk_pct",
+    "sl_mode", "sl_pct", "sl_atr_period", "sl_atr_multiplier",
+    "tp_mode", "tp_pct", "tp_atr_period", "tp_atr_multiplier", "tp_rr_ratio",
+    "trail_mode", "trail_pct", "trail_atr_period", "trail_atr_multiplier",
+    "wfo_splits", "wfo_train_ratio", "created_at", "updated_at",
+]
+
+
+def upsert_backtest_config(db_path, session_id: str, cfg: dict) -> str:
+    """Create or update a backtest config. Returns config id."""
+    con = _conn(db_path)
+    now = datetime.now(timezone.utc)
+    cfg_id = cfg.get("id") or str(uuid.uuid4())
+    existing = con.execute(
+        "SELECT id FROM backtest_configs WHERE id=?", [cfg_id]
+    ).fetchone()
+    if existing:
+        con.execute("""
+            UPDATE backtest_configs SET
+                name=?, entry_code=?, exit_code=?, selected_pairs=?,
+                initial_capital=?, fee_rate=?, slippage=?,
+                position_sizing=?, position_size=?, kelly_fraction=?, atr_risk_pct=?,
+                sl_mode=?, sl_pct=?, sl_atr_period=?, sl_atr_multiplier=?,
+                tp_mode=?, tp_pct=?, tp_atr_period=?, tp_atr_multiplier=?, tp_rr_ratio=?,
+                trail_mode=?, trail_pct=?, trail_atr_period=?, trail_atr_multiplier=?,
+                wfo_splits=?, wfo_train_ratio=?, updated_at=?
+            WHERE id=?
+        """, [
+            cfg.get("name","Default"), cfg.get("entry_code",""), cfg.get("exit_code",""),
+            json.dumps(cfg.get("selected_pairs",[])),
+            cfg.get("initial_capital",10000), cfg.get("fee_rate",0.001),
+            cfg.get("slippage",0.0005), cfg.get("position_sizing","fixed"),
+            cfg.get("position_size",0.1), cfg.get("kelly_fraction",0.25),
+            cfg.get("atr_risk_pct",1.0),
+            cfg.get("sl_mode","none"), cfg.get("sl_pct",2.0),
+            cfg.get("sl_atr_period",14), cfg.get("sl_atr_multiplier",2.0),
+            cfg.get("tp_mode","none"), cfg.get("tp_pct",4.0),
+            cfg.get("tp_atr_period",14), cfg.get("tp_atr_multiplier",4.0),
+            cfg.get("tp_rr_ratio",2.0),
+            cfg.get("trail_mode","none"), cfg.get("trail_pct",2.0),
+            cfg.get("trail_atr_period",14), cfg.get("trail_atr_multiplier",1.5),
+            cfg.get("wfo_splits",5), cfg.get("wfo_train_ratio",0.7),
+            now, cfg_id,
+        ])
+    else:
+        con.execute("""
+            INSERT INTO backtest_configs VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        """, [
+            cfg_id, session_id,
+            cfg.get("name","Default"), cfg.get("entry_code",""), cfg.get("exit_code",""),
+            json.dumps(cfg.get("selected_pairs",[])),
+            cfg.get("initial_capital",10000), cfg.get("fee_rate",0.001),
+            cfg.get("slippage",0.0005), cfg.get("position_sizing","fixed"),
+            cfg.get("position_size",0.1), cfg.get("kelly_fraction",0.25),
+            cfg.get("atr_risk_pct",1.0),
+            cfg.get("sl_mode","none"), cfg.get("sl_pct",2.0),
+            cfg.get("sl_atr_period",14), cfg.get("sl_atr_multiplier",2.0),
+            cfg.get("tp_mode","none"), cfg.get("tp_pct",4.0),
+            cfg.get("tp_atr_period",14), cfg.get("tp_atr_multiplier",4.0),
+            cfg.get("tp_rr_ratio",2.0),
+            cfg.get("trail_mode","none"), cfg.get("trail_pct",2.0),
+            cfg.get("trail_atr_period",14), cfg.get("trail_atr_multiplier",1.5),
+            cfg.get("wfo_splits",5), cfg.get("wfo_train_ratio",0.7),
+            now, now,
+        ])
+    con.close()
+    return cfg_id
+
+
+def get_backtest_config(db_path, cfg_id: str) -> dict | None:
+    con = _conn(db_path)
+    row = con.execute("SELECT * FROM backtest_configs WHERE id=?", [cfg_id]).fetchone()
+    con.close()
+    if not row:
+        return None
+    d = dict(zip(_BT_CONFIG_COLS[:len(row)], row))
+    try:
+        d["selected_pairs"] = json.loads(d.get("selected_pairs","[]"))
+    except Exception:
+        d["selected_pairs"] = []
+    return d
+
+
+def get_latest_backtest_config(db_path, session_id: str) -> dict | None:
+    con = _conn(db_path)
+    row = con.execute("""
+        SELECT * FROM backtest_configs WHERE session_id=?
+        ORDER BY updated_at DESC LIMIT 1
+    """, [session_id]).fetchone()
+    con.close()
+    if not row:
+        return None
+    d = dict(zip(_BT_CONFIG_COLS[:len(row)], row))
+    try:
+        d["selected_pairs"] = json.loads(d.get("selected_pairs","[]"))
+    except Exception:
+        d["selected_pairs"] = []
+    return d
+
+
+def list_backtest_configs(db_path, session_id: str) -> list:
+    con = _conn(db_path)
+    rows = con.execute("""
+        SELECT * FROM backtest_configs WHERE session_id=? ORDER BY updated_at DESC
+    """, [session_id]).fetchall()
+    con.close()
+    result = []
+    for r in rows:
+        d = dict(zip(_BT_CONFIG_COLS[:len(r)], r))
+        try:
+            d["selected_pairs"] = json.loads(d.get("selected_pairs","[]"))
+        except Exception:
+            d["selected_pairs"] = []
         result.append(d)
     return result

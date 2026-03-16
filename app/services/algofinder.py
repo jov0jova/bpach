@@ -578,37 +578,185 @@ class CatalogStrategy(BaseStrategy):
         return df
 
 
+# ── Strategy templates ────────────────────────────────────────────────────────
+
+STRATEGY_TEMPLATES = {
+    "free": {
+        "label": "Free Search",
+        "description": "Unconstrained search across all selected indicators.",
+        "indicators": None,
+        "icon": "bi-shuffle",
+    },
+    "trend_follow": {
+        "label": "Trend Following",
+        "description": "EMA alignment + momentum confirmation. Buy the trend.",
+        "indicators": ["EMA_20", "EMA_50", "EMA_200", "ADX_14", "MACD_hist",
+                       "SUPERT_dir", "RSI_14", "volume_ratio"],
+        "icon": "bi-arrow-up-right",
+    },
+    "mean_revert": {
+        "label": "Mean Reversion",
+        "description": "Oversold bounce from lower band. RSI/Stoch oversold + support.",
+        "indicators": ["RSI_14", "STOCHRSI_K", "BB_pct_20", "BB_lower_20",
+                       "MFI_14", "CCI_20", "WILLR_14", "CMF_20"],
+        "icon": "bi-arrow-left-right",
+    },
+    "breakout": {
+        "label": "Breakout",
+        "description": "Price breaking out with volume confirmation and momentum.",
+        "indicators": ["BB_width_20", "volume_ratio", "ADX_14", "MACD_hist",
+                       "ROC_10", "AO", "SUPERT_dir", "EMA_50"],
+        "icon": "bi-graph-up",
+    },
+    "momentum": {
+        "label": "Momentum",
+        "description": "Strong momentum with trend and volume confirmation.",
+        "indicators": ["RSI_7", "MACD_hist", "AO", "ROC_10", "CMF_20",
+                       "EMA_20", "volume_ratio", "ADX_14"],
+        "icon": "bi-lightning-fill",
+    },
+    "scalp": {
+        "label": "Scalp / Short-term",
+        "description": "Fast oscillators for short-term high-frequency entries.",
+        "indicators": ["RSI_7", "STOCHRSI_K", "BB_pct_20", "MACD_hist",
+                       "NATR_14", "volume_ratio", "EMA_8", "EMA_20"],
+        "icon": "bi-clock-history",
+    },
+}
+
+
+# ── Regime detection ──────────────────────────────────────────────────────────
+
+def _detect_regime(df: "pd.DataFrame") -> str:
+    """Classify the dominant market regime: trending_bull|trending_bear|ranging|volatile."""
+    if len(df) < 50:
+        return "all"
+    try:
+        if "EMA50_slope" in df.columns:
+            slope = float(df["EMA50_slope"].dropna().median())
+        elif "EMA_50" in df.columns:
+            slope = float(df["EMA_50"].pct_change(5).dropna().median()) * 100
+        else:
+            slope = 0.0
+        natr = 0.0
+        if "NATR_14" in df.columns:
+            natr = float(df["NATR_14"].dropna().median())
+        elif "ATR_14" in df.columns and "close" in df.columns:
+            natr = float((df["ATR_14"] / df["close"]).dropna().median()) * 100
+        if natr > 4.0:
+            return "volatile"
+        if slope > 0.05:
+            return "trending_bull"
+        if slope < -0.05:
+            return "trending_bear"
+        return "ranging"
+    except Exception:
+        return "all"
+
+
+# ── Scoring helper ─────────────────────────────────────────────────────────────
+
+def _score_wfo_results(all_wfo: list, min_oos_trades: int = 5) -> float:
+    """
+    Composite score:
+      Sharpe (main) + log(1+return)*0.1 + (PF-1)*0.2 + pair_coverage_bonus
+
+    Rewards strategies that generalize across pairs.
+    Returns -999 if insufficient trades.
+    """
+    if not all_wfo:
+        return -999.0
+    avg_trades = float(np.mean([w["oos_trades"] for w in all_wfo]))
+    if avg_trades < min_oos_trades:
+        return -999.0
+    sharpes     = [w["oos_sharpe"]  for w in all_wfo]
+    returns     = [w["oos_return"]  for w in all_wfo]
+    pfs         = [w.get("oos_profit_factor", 1.0) for w in all_wfo]
+    pairs_pos   = sum(1 for r in returns if r > 0)
+    coverage    = pairs_pos / len(all_wfo)
+    cov_bonus   = 0.3 if coverage >= 0.5 else 0.0
+    return float(
+        np.mean(sharpes)
+        + np.log1p(max(0, np.mean(returns))) * 0.1
+        + (np.mean(pfs) - 1.0) * 0.2
+        + cov_bonus
+    )
+
+
+def _run_wfo_for_trial(df: "pd.DataFrame", strategy, config: dict,
+                       params: dict) -> dict:
+    """Run fast WFO for a single df using the trial's TP/SL/trailing params."""
+    from .backtest import _walk_forward_backtest as _wfbt, _simple_backtest
+    enriched = df.copy(deep=False)
+    enriched = strategy.populate_entry_signal(enriched)
+    enriched = strategy.populate_exit_signal(enriched)
+    bt_kw = dict(
+        initial_capital = config.get("initial_capital", 10_000),
+        fee_rate        = config.get("fee_rate", 0.001),
+        slippage        = config.get("slippage", 0.0005),
+        position_size   = config.get("position_size", 0.1),
+        sl_mode=params.get("sl_mode","none"),
+        sl_pct=params.get("sl_pct", 0.02), sl_atr_period=14,
+        sl_atr_multiplier=params.get("sl_atr_multiplier", 2.0),
+        tp_mode=params.get("tp_mode","none"),
+        tp_pct=params.get("tp_pct", 0.04), tp_atr_period=14,
+        tp_atr_multiplier=params.get("tp_atr_multiplier", 4.0),
+        tp_rr_ratio=params.get("tp_rr_ratio", 2.0),
+        trail_mode=params.get("trail_mode","none"),
+        trail_pct=params.get("trail_pct", 0.02), trail_atr_period=14,
+        trail_atr_multiplier=params.get("trail_atr_multiplier", 1.5),
+    )
+    return _wfbt(enriched, strategy,
+                 n_splits=config.get("wfo_splits", 3),
+                 train_ratio=config.get("wfo_train_ratio", 0.7),
+                 bt_kwargs=bt_kw, fast_mode=True)
+
+
 # ── Optuna objective ──────────────────────────────────────────────────────────
 
 def _objective(trial, dfs: list, config: dict,
-               selected: list, has_htf: bool = False) -> float:
+               selected: list, has_htf: bool = False,
+               ic_scores: dict = None,
+               min_oos_trades: int = 5) -> float:
     """
-    Optuna objective.
+    Smart single-objective Optuna search.
 
-    For each selected indicator:
-      • suggest use_<col>    (0/1 — active or not this trial)
-      • suggest thresh_<col> (float — only for osc/gt/lt/band_pct types)
-
-    Cross-conditions between price-scale indicators (MA alignment, band vs MA)
-    are derived automatically inside CatalogStrategy — no extra parameters needed.
+    Improvements vs. v1:
+    - IC-biased indicator activation: high-IC indicators more likely to be active.
+    - Dynamic TP/SL/trailing also optimised per trial.
+    - Cross-pair generalization reward.
+    - Composite score: Sharpe + log(return) + (PF-1) + coverage bonus.
     """
     params = {}
-
-    # Exit parameters (always tuned regardless of indicator selection)
     params["rsi_exit_period"] = trial.suggest_categorical("rsi_exit_period", [7, 14, 21])
     params["rsi_exit_min"]    = trial.suggest_float("rsi_exit_min", 60, 85)
 
-    # Per-indicator parameters
+    # Dynamic stop/profit params (optimised alongside entry rules)
+    params["sl_mode"]              = trial.suggest_categorical("sl_mode", ["none","fixed","atr"])
+    params["sl_pct"]               = trial.suggest_float("sl_pct", 0.01, 0.08)
+    params["sl_atr_multiplier"]    = trial.suggest_float("sl_atr_multiplier", 1.0, 4.0)
+    params["tp_mode"]              = trial.suggest_categorical("tp_mode", ["none","fixed","atr","rr"])
+    params["tp_pct"]               = trial.suggest_float("tp_pct", 0.02, 0.15)
+    params["tp_atr_multiplier"]    = trial.suggest_float("tp_atr_multiplier", 2.0, 8.0)
+    params["tp_rr_ratio"]          = trial.suggest_float("tp_rr_ratio", 1.0, 4.0)
+    params["trail_mode"]           = trial.suggest_categorical("trail_mode", ["none","fixed","atr"])
+    params["trail_pct"]            = trial.suggest_float("trail_pct", 0.005, 0.05)
+    params["trail_atr_multiplier"] = trial.suggest_float("trail_atr_multiplier", 0.5, 3.0)
+
+    # Per-indicator parameters (IC-biased activation)
     for col in selected:
         spec = FULL_INDICATOR_CATALOG.get(col)
         if spec is None:
             continue
-        params[f"use_{col}"] = trial.suggest_categorical(f"use_{col}", [0, 1])
+        # IC-guided: high |IC| → higher activation probability
+        ic_val = (ic_scores or {}).get(col, 0.0)
+        p_active = 0.3 + min(0.5, ic_val * 5.0)
+        raw = trial.suggest_float(f"p_use_{col}", 0.0, 1.0)
+        params[f"use_{col}"] = int(raw < p_active)
         if spec["type"] in ("osc", "gt", "lt", "band_pct") and "range" in spec:
             lo, hi = spec["range"]
             params[f"thresh_{col}"] = trial.suggest_float(f"thresh_{col}", lo, hi)
 
-    # HTF filters (only when HTF data is present)
     if has_htf:
         params["use_htf_trend"]      = trial.suggest_categorical("use_htf_trend", [0, 1])
         params["use_htf_supertrend"] = trial.suggest_categorical("use_htf_supertrend", [0, 1])
@@ -618,59 +766,133 @@ def _objective(trial, dfs: list, config: dict,
         params["htf_adx_min"]        = trial.suggest_float("htf_adx_min", 15, 40)
 
     strategy = CatalogStrategy(params, selected)
-    all_wfo = []
-
+    all_wfo  = []
     for df in dfs:
         if len(df) < 100:
             continue
-        # Shallow copy: only the signal columns are added/overwritten, so a
-        # full deep copy of 200+ indicator columns is unnecessary.
-        enriched = df.copy(deep=False)
-        enriched = strategy.populate_entry_signal(enriched)
-        enriched = strategy.populate_exit_signal(enriched)
-        wfo = _walk_forward_backtest(
-            enriched, strategy,
-            n_splits=config.get("wfo_splits", 3),
-            train_ratio=config.get("wfo_train_ratio", 0.7),
-            initial_capital=config.get("initial_capital", 10_000),
-            fee_rate=config.get("fee_rate", 0.001),
-            slippage=config.get("slippage", 0.0005),
-            position_size=config.get("position_size", 0.1),
-            fast_mode=True,
-        )
-        all_wfo.append(wfo)
+        try:
+            all_wfo.append(_run_wfo_for_trial(df, strategy, config, params))
+        except Exception:
+            continue
+
+    return _score_wfo_results(all_wfo, min_oos_trades)
+
+
+def _objective_multi(trial, dfs: list, config: dict,
+                     selected: list, has_htf: bool = False,
+                     ic_scores: dict = None) -> tuple:
+    """
+    Multi-objective: maximise (oos_sharpe, oos_return) simultaneously.
+    Returns Pareto-optimal strategies.
+    """
+    params = {}
+    params["rsi_exit_period"] = trial.suggest_categorical("rsi_exit_period", [7, 14, 21])
+    params["rsi_exit_min"]    = trial.suggest_float("rsi_exit_min", 60, 85)
+    params["sl_mode"]              = trial.suggest_categorical("sl_mode", ["none","fixed","atr"])
+    params["sl_pct"]               = trial.suggest_float("sl_pct", 0.01, 0.08)
+    params["sl_atr_multiplier"]    = trial.suggest_float("sl_atr_multiplier", 1.0, 4.0)
+    params["tp_mode"]              = trial.suggest_categorical("tp_mode", ["none","fixed","atr","rr"])
+    params["tp_pct"]               = trial.suggest_float("tp_pct", 0.02, 0.15)
+    params["tp_atr_multiplier"]    = trial.suggest_float("tp_atr_multiplier", 2.0, 8.0)
+    params["tp_rr_ratio"]          = trial.suggest_float("tp_rr_ratio", 1.0, 4.0)
+    params["trail_mode"]           = trial.suggest_categorical("trail_mode", ["none","fixed","atr"])
+    params["trail_pct"]            = trial.suggest_float("trail_pct", 0.005, 0.05)
+    params["trail_atr_multiplier"] = trial.suggest_float("trail_atr_multiplier", 0.5, 3.0)
+
+    for col in selected:
+        spec = FULL_INDICATOR_CATALOG.get(col)
+        if spec is None:
+            continue
+        ic_val = (ic_scores or {}).get(col, 0.0)
+        p_active = 0.3 + min(0.5, ic_val * 5.0)
+        raw = trial.suggest_float(f"p_use_{col}", 0.0, 1.0)
+        params[f"use_{col}"] = int(raw < p_active)
+        if spec["type"] in ("osc", "gt", "lt", "band_pct") and "range" in spec:
+            lo, hi = spec["range"]
+            params[f"thresh_{col}"] = trial.suggest_float(f"thresh_{col}", lo, hi)
+
+    if has_htf:
+        params["use_htf_trend"]      = trial.suggest_categorical("use_htf_trend", [0, 1])
+        params["use_htf_supertrend"] = trial.suggest_categorical("use_htf_supertrend", [0, 1])
+        params["use_htf_rsi_filter"] = trial.suggest_categorical("use_htf_rsi_filter", [0, 1])
+        params["htf_rsi_max"]        = trial.suggest_float("htf_rsi_max", 30, 70)
+        params["use_htf_adx_filter"] = trial.suggest_categorical("use_htf_adx_filter", [0, 1])
+        params["htf_adx_min"]        = trial.suggest_float("htf_adx_min", 15, 40)
+
+    strategy = CatalogStrategy(params, selected)
+    all_wfo  = []
+    for df in dfs:
+        if len(df) < 100:
+            continue
+        try:
+            all_wfo.append(_run_wfo_for_trial(df, strategy, config, params))
+        except Exception:
+            continue
 
     if not all_wfo:
-        return -999.0
-
-    oos_sharpe = np.mean([w["oos_sharpe"] for w in all_wfo])
-    oos_trades = np.mean([w["oos_trades"] for w in all_wfo])
-    oos_return = np.mean([w["oos_return"] for w in all_wfo])
-
-    if oos_trades < 5:
-        return -999.0
-
-    return float(oos_sharpe + oos_return * 0.01)
-
+        return (-999.0, -999.0)
+    avg_trades = float(np.mean([w["oos_trades"] for w in all_wfo]))
+    if avg_trades < 5:
+        return (-999.0, -999.0)
+    return (
+        float(np.mean([w["oos_sharpe"]  for w in all_wfo])),
+        float(np.mean([w["oos_return"]  for w in all_wfo])),
+    )
 
 # ── Main task ─────────────────────────────────────────────────────────────────
 
+def _extract_ic_scores(config: dict) -> dict:
+    """
+    Extract {col: max_abs_ic} from IC analysis results stored in config.
+    Used to bias indicator activation probability.
+    """
+    ic_result = config.get("ic_result") or {}
+    top_overall = ic_result.get("top_overall") or []
+    return {row["col"]: row.get("max_abs_ic", 0.0) for row in top_overall if row.get("col")}
+
+
 def run_algofinder(task_id: str, db_path: Path, session_id: str,
                    parquet_dir: Path, timeframes: list,
-                   n_trials: int = 50, config: dict = None, stop_event=None) -> None:
+                   n_trials: int = 100, config: dict = None, stop_event=None) -> None:
     """
-    Background task: run Optuna search for best strategy parameters.
-    config["selected_indicators"] controls which indicators are searched.
-    Falls back to DEFAULT_INDICATORS when not specified.
+    Background task: smart Optuna search for the most profitable strategy.
+
+    New in v2:
+    - IC-guided indicator activation (uses IC analysis results)
+    - Strategy templates (bias search toward proven archetypes)
+    - Multi-objective NSGA-II support
+    - Dynamic TP/SL/trailing also optimised per trial
+    - Cross-pair generalization scoring
+    - Composite score: Sharpe + log(return) + PF + coverage bonus
+
+    config keys:
+        selected_indicators: list of indicator keys
+        selected_pairs:      list of symbols (subset)
+        template:            'free' | 'trend_follow' | 'mean_revert' | 'breakout' |
+                             'momentum' | 'scalp'
+        multi_objective:     bool (use NSGA-II Pareto search)
+        ic_result:           dict from IC analysis (used to bias sampling)
+        min_oos_trades:      int (minimum OOS trades to consider valid)
     """
     if config is None:
         config = {}
 
-    selected = config.get("selected_indicators") or DEFAULT_INDICATORS
-    # Keep only keys that exist in the full catalog (static + auto-classified)
-    selected = [k for k in selected if k in FULL_INDICATOR_CATALOG]
+    # Template selection: override indicators if template is set
+    template_key = config.get("template", "free")
+    template = STRATEGY_TEMPLATES.get(template_key, STRATEGY_TEMPLATES["free"])
+    if template.get("indicators"):
+        selected = [k for k in template["indicators"] if k in FULL_INDICATOR_CATALOG]
+    else:
+        selected = config.get("selected_indicators") or DEFAULT_INDICATORS
+        selected = [k for k in selected if k in FULL_INDICATOR_CATALOG]
     if not selected:
         selected = DEFAULT_INDICATORS
+
+    # IC scores for guided sampling
+    ic_scores = _extract_ic_scores(config)
+
+    multi_obj     = bool(config.get("multi_objective", False))
+    min_oos_trades = int(config.get("min_oos_trades", 5))
 
     def progress(p, total, msg):
         m.update_task(db_path, task_id, progress=p, total=total, message=msg)
@@ -680,7 +902,6 @@ def run_algofinder(task_id: str, db_path: Path, session_id: str,
     pairs  = m.list_pairs(db_path, session_id)
     active = [p for p in pairs if not p["excluded"] and p["candle_count"] > 0]
 
-    # Filter to user-selected pairs when specified
     selected_pairs = config.get("selected_pairs") or []
     if selected_pairs:
         active = [p for p in active if p["symbol"] in selected_pairs]
@@ -690,9 +911,9 @@ def run_algofinder(task_id: str, db_path: Path, session_id: str,
     primary_tf = timeframes[0] if timeframes else "1h"
     higher_tfs = timeframes[1:] if len(timeframes) > 1 else []
 
-    dfs = []
+    dfs            = []
     htf_found_flag = [False]
-    load_lock = threading.Lock()
+    load_lock      = threading.Lock()
 
     def _load_pair(pair: dict):
         symbol = pair["symbol"]
@@ -703,7 +924,6 @@ def run_algofinder(task_id: str, db_path: Path, session_id: str,
         if len(df) < 100:
             return None
         strat = BaseStrategy()
-        # Skip recomputation when Phase 5 already stored indicators in the parquet
         if "RSI_14" not in df.columns:
             df = strat.populate_indicators(df)
         pair_htf_found = False
@@ -722,7 +942,7 @@ def run_algofinder(task_id: str, db_path: Path, session_id: str,
                 htf_found_flag[0] = True
         return df
 
-    sample_pairs = active[:50]   # cap at 50; user can narrow via per-pair selection
+    sample_pairs = active[:50]
     workers = min((os.cpu_count() or 4) * 4, len(sample_pairs))
     with ThreadPoolExecutor(max_workers=workers) as exe:
         for result in exe.map(_load_pair, sample_pairs):
@@ -737,21 +957,33 @@ def run_algofinder(task_id: str, db_path: Path, session_id: str,
                       message="Please download and enrich data first.")
         return
 
-    sel_labels = ", ".join(
-        FULL_INDICATOR_CATALOG[k]["label"] for k in selected if k in FULL_INDICATOR_CATALOG
-    )
-    tf_desc = primary_tf + (f" + HTF: {', '.join(higher_tfs)}" if htf_found else "")
+    # Detect dominant regime across pairs for regime-aware reporting
+    regimes = [_detect_regime(df) for df in dfs[:10]]
+    dominant_regime = max(set(regimes), key=regimes.count) if regimes else "all"
+
+    ic_guided = bool(ic_scores)
+    tf_desc   = primary_tf + (f" + HTF: {', '.join(higher_tfs)}" if htf_found else "")
+    mode_desc = ("NSGA-II multi-obj" if multi_obj
+                 else f"TPE {'IC-guided' if ic_guided else 'free'}")
     progress(0, n_trials,
-             f"Running {n_trials} trials on {len(dfs)} pairs [{tf_desc}] — "
-             f"{len(selected)} indicator groups…")
+             f"{n_trials} trials on {len(dfs)} pairs [{tf_desc}] | "
+             f"Template={template['label']} | Sampler={mode_desc} | "
+             f"Regime={dominant_regime}")
 
-    study = optuna.create_study(
-        direction="maximize",
-        sampler=optuna.samplers.TPESampler(seed=42),
-        pruner=optuna.pruners.MedianPruner(n_startup_trials=10, n_warmup_steps=0),
-    )
+    # ── Create Optuna study ──────────────────────────────────────────────────
+    if multi_obj:
+        study = optuna.create_study(
+            directions=["maximize", "maximize"],
+            sampler=optuna.samplers.NSGAIISampler(seed=42),
+        )
+    else:
+        study = optuna.create_study(
+            direction="maximize",
+            sampler=optuna.samplers.TPESampler(seed=42),
+            pruner=optuna.pruners.MedianPruner(n_startup_trials=10, n_warmup_steps=0),
+        )
 
-    trial_count = [0]
+    trial_count  = [0]
     counter_lock = threading.Lock()
 
     def callback(study, trial):
@@ -759,76 +991,114 @@ def run_algofinder(task_id: str, db_path: Path, session_id: str,
             trial_count[0] += 1
             count = trial_count[0]
         if count % 5 == 0:
-            try:
-                best = study.best_value
-            except Exception:
-                best = float("nan")
-            progress(count, n_trials, f"Trial {count}/{n_trials} — best score: {best:.3f}")
+            if multi_obj:
+                best_str = f"{len(study.best_trials)} Pareto solutions"
+            else:
+                try:
+                    best_str = f"best={study.best_value:.3f}"
+                except Exception:
+                    best_str = "searching…"
+            progress(count, n_trials,
+                     f"Trial {count}/{n_trials} — {best_str}")
 
     n_jobs = (os.cpu_count() or 1) * 2
-    study.optimize(
-        lambda trial: _objective(trial, dfs, config, selected, has_htf=htf_found),
-        n_trials=n_trials,
-        n_jobs=n_jobs,
-        callbacks=[callback],
-        show_progress_bar=False,
+    if multi_obj:
+        study.optimize(
+            lambda t: _objective_multi(t, dfs, config, selected,
+                                       has_htf=htf_found, ic_scores=ic_scores),
+            n_trials=n_trials, n_jobs=n_jobs,
+            callbacks=[callback], show_progress_bar=False,
+        )
+        # Collect Pareto front trials
+        pareto = [t for t in study.best_trials]
+        # Sort by sharpe + return combined
+        pareto.sort(
+            key=lambda t: (t.values[0] + t.values[1] * 0.01 if t.values else -999),
+            reverse=True,
+        )
+        top_trials = pareto[:10]
+    else:
+        study.optimize(
+            lambda t: _objective(t, dfs, config, selected,
+                                 has_htf=htf_found, ic_scores=ic_scores,
+                                 min_oos_trades=min_oos_trades),
+            n_trials=n_trials, n_jobs=n_jobs,
+            callbacks=[callback], show_progress_bar=False,
+        )
+        completed = [t for t in study.trials
+                     if t.state == optuna.trial.TrialState.COMPLETE
+                     and (t.value or -999) > -999]
+        completed.sort(key=lambda t: (t.value or -999), reverse=True)
+        top_trials = completed[:10]
+
+    any_profitable = any(
+        (t.values[0] if multi_obj else t.value or 0) > 0
+        for t in top_trials
     )
 
-    completed = [t for t in study.trials
-                 if t.state == optuna.trial.TrialState.COMPLETE and t.value > -999]
-    completed.sort(key=lambda t: t.value, reverse=True)
-    top5 = completed[:5]
+    # Clear old results for this session before saving new ones
+    m.clear_algo_results(db_path, session_id)
 
-    any_profitable = any(t.value > 0 for t in top5)
-
-    for rank, trial in enumerate(top5, 1):
-        params = trial.params
+    for rank, trial in enumerate(top_trials, 1):
+        params   = trial.params
         strategy = CatalogStrategy(params, selected)
 
         all_wfo = []
         for df in dfs:
-            enriched = df.copy()
-            enriched = strategy.populate_entry_signal(enriched)
-            enriched = strategy.populate_exit_signal(enriched)
-            wfo = _walk_forward_backtest(
-                enriched, strategy,
-                n_splits=config.get("wfo_splits", 3),
-                train_ratio=config.get("wfo_train_ratio", 0.7),
-                initial_capital=config.get("initial_capital", 10_000),
-                fee_rate=config.get("fee_rate", 0.001),
-                slippage=config.get("slippage", 0.0005),
-                position_size=config.get("position_size", 0.1),
-            )
-            all_wfo.append(wfo)
+            try:
+                all_wfo.append(_run_wfo_for_trial(df, strategy, config, params))
+            except Exception:
+                continue
 
-        def avg(key):
-            vals = [w[key] for w in all_wfo]
+        def _avg(key):
+            vals = [w[key] for w in all_wfo if w.get(key) is not None]
             return float(np.mean(vals)) if vals else 0.0
+
+        pairs_positive = sum(1 for w in all_wfo if w.get("oos_return", 0) > 0)
+        pair_coverage  = pairs_positive / len(all_wfo) if all_wfo else 0.0
 
         rules = _describe_rules(params, selected)
         m.save_algo_result(
             db_path, session_id, None, rank,
-            f"AlgoStrategy_#{rank}",
+            f"{template['label']}_#{rank}",
             params, rules,
             {
-                "is_return":    avg("is_return"),
-                "oos_return":   avg("oos_return"),
-                "win_rate":     avg("oos_win_rate"),
-                "sharpe":       avg("oos_sharpe"),
-                "max_drawdown": avg("oos_max_dd"),
+                "is_return":     _avg("is_return"),
+                "oos_return":    _avg("oos_return"),
+                "win_rate":      _avg("oos_win_rate"),
+                "sharpe":        _avg("oos_sharpe"),
+                "max_drawdown":  _avg("oos_max_dd"),
+                "profit_factor": _avg("oos_profit_factor"),
+                "calmar_ratio":  _avg("oos_calmar"),
+                "sortino_ratio": _avg("oos_sortino"),
+                "expectancy":    _avg("oos_expectancy"),
+                "pair_coverage": pair_coverage,
+                "regime":        dominant_regime,
+                "template":      template_key,
             },
         )
 
-    if not top5:
-        summary = "Algo Finder finished — no valid strategies (all trials had < 5 trades). Try more trials or fewer indicators."
+    if not top_trials:
+        summary = (f"Algo Finder finished — no valid strategies found. "
+                   f"Try more trials, different template, or add more data.")
     elif any_profitable:
-        summary = f"Algo Finder complete — {len(top5)} strategies found, best OOS score: {top5[0].value:.3f}"
+        n = len(top_trials)
+        best_s = (top_trials[0].values[0] if multi_obj else top_trials[0].value) or 0
+        summary = (f"✓ {n} strategies found | Regime={dominant_regime} | "
+                   f"Template={template['label']} | Best score={best_s:.3f}")
     else:
-        summary = (f"Algo Finder finished — {len(top5)} strategies saved but none were profitable OOS. "
-                   "Consider more trials, different indicators, or more data.")
+        summary = (f"Algo Finder done — {len(top_trials)} strategies saved but none profitable OOS. "
+                   "Try more trials or a different template.")
+
     progress(n_trials, n_trials, summary)
-    m.update_task(db_path, task_id,
-                  result={"top_count": len(top5), "any_profitable": any_profitable})
+    m.update_task(db_path, task_id, result={
+        "top_count": len(top_trials),
+        "any_profitable": any_profitable,
+        "regime": dominant_regime,
+        "template": template_key,
+        "ic_guided": ic_guided,
+        "multi_objective": multi_obj,
+    })
 
 
 # ── Rule description ──────────────────────────────────────────────────────────
