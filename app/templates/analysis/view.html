@@ -32,6 +32,14 @@
             {% if task and task.status == 'running' %}Analysing…{% else %}Run Analysis{% endif %}
           </button>
         </form>
+        {% if task and task.status == 'running' %}
+        <form method="post" action="{{ url_for('analysis.stop', session_id=session.id) }}"
+              class="mt-2" onsubmit="return confirm('Stop the analysis?')">
+          <button type="submit" class="btn btn-outline-danger btn-sm w-100">
+            <i class="bi bi-stop-circle me-1"></i>Stop Analysis
+          </button>
+        </form>
+        {% endif %}
         {% if not runs or not (runs | selectattr('status', 'equalto', 'done') | list) %}
         <div class="alert alert-warning mt-2 py-2 small">
           <i class="bi bi-exclamation-triangle me-1"></i>

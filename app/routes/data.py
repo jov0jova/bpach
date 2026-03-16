@@ -51,6 +51,16 @@ def start_download(session_id):
     return redirect(url_for("data.data_view", session_id=session_id))
 
 
+@bp.route("/<session_id>/stop", methods=["POST"])
+def stop(session_id):
+    from ..tasks.runner import request_cancel
+    task = db.get_latest_task(session_id, "download")
+    if task and task["status"] == "running":
+        request_cancel(current_app.config["DB_PATH"], task["id"])
+        flash("Stop requested.", "warning")
+    return redirect(url_for("data.data_view", session_id=session_id))
+
+
 @bp.route("/<session_id>/status")
 def download_status(session_id):
     """HTMX polling for download progress."""
