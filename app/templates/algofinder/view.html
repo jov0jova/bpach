@@ -293,8 +293,12 @@
                 <th class="text-end">WR</th>
                 <th class="text-end">PF</th>
                 <th class="text-end">Sharpe</th>
+                <th class="text-end">Sortino</th>
                 <th class="text-end">Calmar</th>
+                <th class="text-end">Max DD</th>
+                <th class="text-end">Expect.</th>
                 <th class="text-end">Pairs</th>
+                <th class="text-end">Regime</th>
                 <th class="text-end">Template</th>
                 <th></th>
               </tr>
@@ -316,11 +320,22 @@
                   {{ '%.2f'|format(r.profit_factor) }}</td>
                 <td class="text-end {{ 'text-success' if r.sharpe > 1 else 'text-muted' }}">
                   {{ '%.2f'|format(r.sharpe) }}</td>
+                <td class="text-end {{ 'text-success' if r.sortino_ratio and r.sortino_ratio > 1 else 'text-muted' }}">
+                  {{ '%.2f'|format(r.sortino_ratio) if r.get('sortino_ratio') else '—' }}</td>
                 <td class="text-end text-muted">
                   {{ '%.2f'|format(r.calmar_ratio) if r.get('calmar_ratio') else '—' }}</td>
+                <td class="text-end {{ 'text-danger' if r.max_drawdown and r.max_drawdown < -0.2 else 'text-muted' }}">
+                  {{ '%.1f%%'|format(r.max_drawdown * 100) if r.get('max_drawdown') else '—' }}</td>
+                <td class="text-end {{ 'text-success' if r.expectancy and r.expectancy > 0 else 'text-muted' }}">
+                  {{ '%.4f'|format(r.expectancy) if r.get('expectancy') else '—' }}</td>
                 <td class="text-end">
                   <span class="badge {{ 'bg-success' if r.pair_coverage >= 0.5 else 'bg-secondary' }}">
                     {{ '%.0f%%'|format(r.pair_coverage * 100) if r.get('pair_coverage') else '—' }}
+                  </span>
+                </td>
+                <td class="text-end">
+                  <span class="badge bg-dark border small" style="font-size:10px">
+                    {{ r.regime if r.get('regime') else '—' }}
                   </span>
                 </td>
                 <td class="text-end">
@@ -334,7 +349,7 @@
                 </td>
               </tr>
               <tr class="rules-row" id="rules_{{ loop.index0 }}" style="display:none">
-                <td colspan="11">
+                <td colspan="15">
                   <pre class="p-2 bg-dark rounded small text-light mb-0"
                        style="font-size:11px;white-space:pre-wrap">{{ r.rules_description }}</pre>
                   {% if r.params %}
