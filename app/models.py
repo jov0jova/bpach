@@ -3,23 +3,55 @@ DuckDB schema definitions and CRUD helpers.
 All tables are created in data/app.db on first run.
 """
 import json
+import threading
 import uuid
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
 import duckdb
 
+# DuckDB does not support concurrent writers from multiple threads.
+# Serialise every DB access behind a single lock so progress callbacks
+# (Optuna, indicator loops, etc.) and Flask request threads never conflict.
+_db_lock = threading.Lock()
 
-def _conn(db_path: str | Path) -> duckdb.DuckDBPyConnection:
-    return duckdb.connect(str(db_path))
+
+class _LockedConn:
+    """Wraps a DuckDB connection and holds _db_lock for its lifetime.
+
+    Existing call sites use the pattern:
+        con = _conn(db_path)
+        con.execute(...)
+        con.close()
+    This wrapper acquires the lock on construction and releases it in close(),
+    so no call sites need to change.
+    """
+    def __init__(self, db_path: str | Path):
+        _db_lock.acquire()
+        self._con = duckdb.connect(str(db_path))
+
+    def execute(self, *args, **kwargs):
+        return self._con.execute(*args, **kwargs)
+
+    def executemany(self, *args, **kwargs):
+        return self._con.executemany(*args, **kwargs)
+
+    def close(self):
+        try:
+            self._con.close()
+        finally:
+            _db_lock.release()
 
 
-from contextlib import contextmanager
+def _conn(db_path: str | Path) -> _LockedConn:
+    return _LockedConn(db_path)
+
 
 @contextmanager
 def _db(db_path: str | Path):
     """Context manager that opens a DuckDB connection and closes it on exit."""
-    con = duckdb.connect(str(db_path))
+    con = _conn(db_path)
     try:
         yield con
     finally:
