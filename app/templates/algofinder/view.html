@@ -207,6 +207,15 @@
     </div>
     </form>
 
+    {% if task and task.status == 'running' %}
+    <form method="post" action="{{ url_for('algofinder.stop', session_id=session.id) }}"
+          onsubmit="return confirm('Stop the running search?')">
+      <button type="submit" class="btn btn-outline-danger btn-sm w-100 mb-3">
+        <i class="bi bi-stop-circle me-1"></i>Stop Search
+      </button>
+    </form>
+    {% endif %}
+
     <form method="post" action="{{ url_for('algofinder.clear', session_id=session.id) }}"
           onsubmit="return confirm('Clear all saved results?')">
       <button type="submit" class="btn btn-outline-secondary btn-sm w-100">

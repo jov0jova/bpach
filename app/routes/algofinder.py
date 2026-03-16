@@ -129,6 +129,16 @@ def clear(session_id):
     return redirect(url_for("algofinder.algofinder_view", session_id=session_id))
 
 
+@bp.route("/<session_id>/stop", methods=["POST"])
+def stop(session_id):
+    from ..tasks.runner import request_cancel
+    task = db.get_latest_task(session_id, "algofinder")
+    if task and task["status"] == "running":
+        request_cancel(current_app.config["DB_PATH"], task["id"])
+        flash("Stop requested.", "warning")
+    return redirect(url_for("algofinder.algofinder_view", session_id=session_id))
+
+
 @bp.route("/<session_id>/status")
 def status(session_id):
     task = db.get_latest_task(session_id, "algofinder")
