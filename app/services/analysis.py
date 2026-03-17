@@ -53,7 +53,7 @@ def run_analysis(task_id: str, db_path: Path, session_id: str,
         progress(idx, len(winners), f"Analysing {trade['symbol']} @ {trade['entry_time']}…")
 
         symbol = trade["symbol"]
-        entry_time = pd.Timestamp(trade["entry_time"])
+        entry_time = pd.Timestamp(trade["entry_time"], tz="UTC")
 
         # Load data for primary timeframe
         snapshot = {}
