@@ -1032,7 +1032,7 @@ def run_algofinder(task_id: str, db_path: Path, session_id: str,
             key=lambda t: (t.values[0] + t.values[1] * 0.01 if t.values else -999),
             reverse=True,
         )
-        top_trials = pareto[:10]
+        top_trials = pareto
     else:
         study.optimize(
             lambda t: _objective(t, dfs, config, selected,
@@ -1045,7 +1045,7 @@ def run_algofinder(task_id: str, db_path: Path, session_id: str,
                      if t.state == optuna.trial.TrialState.COMPLETE
                      and (t.value or -999) > -999]
         completed.sort(key=lambda t: (t.value or -999), reverse=True)
-        top_trials = completed[:10]
+        top_trials = completed
 
     any_profitable = any(
         (t.values[0] if multi_obj else t.value or 0) > 0
