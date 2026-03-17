@@ -27,6 +27,7 @@ Indicator search design (Path B)
     gt          col > threshold     strength/ratio indicators (ADX, volume…)
     sign        col > 0             momentum sign (MACD hist, AO, CMF …)
     flag        col == 1            binary direction flags (Supertrend, PSAR)
+    cdl         col > 0             candlestick patterns (store 100, check > 0)
     ma          close > col         price above a moving average (EMA_X)
     band_lower  close < col         price below lower band = oversold bounce
     band_pct    col < threshold     normalised band position (BB %B)
@@ -328,6 +329,8 @@ def _auto_classify(col: str) -> "dict | None":
     cat = _auto_cat(col)
 
     # Flags: binary bullish signal
+    if col.startswith("CDL_"):
+        return {"type": "cdl", "label": col, "cat": "Candlesticks"}
     if col in _FLAG_COLS or col.endswith("_dir") or col.endswith("_BULL"):
         return {"type": "flag", "label": col, "cat": cat}
 
@@ -612,7 +615,15 @@ class CatalogStrategy(BaseStrategy):
 
     def populate_entry_signal(self, df: pd.DataFrame) -> pd.DataFrame:
         p = self.params
-        cond = pd.Series(True, index=df.index)
+        # trigger_logic controls how oversold/cross/cdl conditions combine:
+        #   "and" → ALL active triggers must fire  (default, strict)
+        #   "or"  → ANY active trigger is enough   (more signals, less overfitting)
+        trigger_logic = p.get("trigger_logic", "and")
+
+        # Two accumulator series: triggers (osc/band/cdl/cross) and filters (ma/trend/htf)
+        trigger_cond = pd.Series(False, index=df.index)  # OR-built
+        filter_cond  = pd.Series(True,  index=df.index)  # AND-built
+        n_triggers   = 0
 
         active_mas   = []   # (period_int, col) for active "ma" entries
         active_bands = []   # col names for active "band_lower" entries
@@ -626,36 +637,81 @@ class CatalogStrategy(BaseStrategy):
 
             kind = spec["type"]
 
-            # ── Dynamic crossover conditions (no precomputed column needed) ──
+            # ── Dynamic crossover conditions (triggers, no precomputed column) ──
             if kind in ("cross_above", "cross_below"):
                 cross = _cross_cond(df, spec)
                 if cross is not None:
-                    cond &= cross
+                    trigger_cond |= cross
+                    n_triggers   += 1
                 continue
 
             # Regular conditions require the column to exist in df
             if col not in df.columns:
                 continue
 
-            if kind == "osc" or kind == "band_pct" or kind == "lt":
-                cond &= df[col] < p[f"thresh_{col}"]
-
-            elif kind == "gt":
-                cond &= df[col] > p[f"thresh_{col}"]
-
-            elif kind == "sign":
-                cond &= df[col] > 0
-
-            elif kind == "flag":
-                cond &= df[col] == 1
-
-            elif kind == "ma":
-                cond &= df["close"] > df[col]
-                active_mas.append((_ma_period(col), col))
+            # ── Trigger conditions (oversold / pattern — combine with OR or AND) ──
+            if kind in ("osc", "band_pct"):
+                c = df[col] < p[f"thresh_{col}"]
+                trigger_cond |= c
+                n_triggers   += 1
 
             elif kind == "band_lower":
-                cond &= df["close"] < df[col]
+                c = df["close"] < df[col]
+                trigger_cond |= c
+                n_triggers   += 1
                 active_bands.append(col)
+
+            elif kind == "cdl":
+                trigger_cond |= (df[col] > 0)
+                n_triggers   += 1
+
+            # ── Filter conditions (context/trend — always AND) ──────────────
+            elif kind == "lt":
+                filter_cond &= df[col] < p[f"thresh_{col}"]
+
+            elif kind == "gt":
+                filter_cond &= df[col] > p[f"thresh_{col}"]
+
+            elif kind == "sign":
+                filter_cond &= df[col] > 0
+
+            elif kind == "flag":
+                filter_cond &= df[col] == 1
+
+            elif kind == "ma":
+                filter_cond &= df["close"] > df[col]
+                active_mas.append((_ma_period(col), col))
+
+        # ── Combine trigger group with filter group ───────────────────────────
+        if n_triggers == 0:
+            # No triggers selected — fall back to pure filter logic
+            cond = filter_cond
+        elif trigger_logic == "or":
+            # ANY trigger fires → AND with all filters
+            cond = trigger_cond & filter_cond
+        else:
+            # ALL triggers must fire (AND mode) → AND with filters
+            # Rebuild trigger_cond as AND
+            cond = filter_cond
+            for col in self._selected:
+                if not p.get(f"use_{col}", 0):
+                    continue
+                spec = FULL_INDICATOR_CATALOG.get(col)
+                if spec is None:
+                    continue
+                kind = spec["type"]
+                if kind in ("cross_above", "cross_below"):
+                    cross = _cross_cond(df, spec)
+                    if cross is not None:
+                        cond &= cross
+                elif col not in df.columns:
+                    continue
+                elif kind in ("osc", "band_pct"):
+                    cond &= df[col] < p[f"thresh_{col}"]
+                elif kind == "band_lower":
+                    cond &= df["close"] < df[col]
+                elif kind == "cdl":
+                    cond &= df[col] > 0
 
         # ── Derived cross-conditions (price-unit indicators) ──────────────
         # MA alignment: if ≥2 MAs active, require shorter-period > longer-period
@@ -861,8 +917,9 @@ def _objective(trial, dfs: list, config: dict,
     - Composite score: Sharpe + log(return) + (PF-1) + coverage bonus.
     """
     params = {}
-    params["rsi_exit_period"] = trial.suggest_categorical("rsi_exit_period", [7, 14, 21])
-    params["rsi_exit_min"]    = trial.suggest_float("rsi_exit_min", 60, 85)
+    params["rsi_exit_period"]  = trial.suggest_categorical("rsi_exit_period", [7, 14, 21])
+    params["rsi_exit_min"]     = trial.suggest_float("rsi_exit_min", 60, 85)
+    params["trigger_logic"]    = trial.suggest_categorical("trigger_logic", ["and", "or"])
 
     # Dynamic stop/profit params (optimised alongside entry rules)
     params["sl_mode"]              = trial.suggest_categorical("sl_mode", ["none","fixed","atr"])
@@ -920,8 +977,9 @@ def _objective_multi(trial, dfs: list, config: dict,
     Returns Pareto-optimal strategies.
     """
     params = {}
-    params["rsi_exit_period"] = trial.suggest_categorical("rsi_exit_period", [7, 14, 21])
-    params["rsi_exit_min"]    = trial.suggest_float("rsi_exit_min", 60, 85)
+    params["rsi_exit_period"]  = trial.suggest_categorical("rsi_exit_period", [7, 14, 21])
+    params["rsi_exit_min"]     = trial.suggest_float("rsi_exit_min", 60, 85)
+    params["trigger_logic"]    = trial.suggest_categorical("trigger_logic", ["and", "or"])
     params["sl_mode"]              = trial.suggest_categorical("sl_mode", ["none","fixed","atr"])
     params["sl_pct"]               = trial.suggest_float("sl_pct", 0.01, 0.08)
     params["sl_atr_multiplier"]    = trial.suggest_float("sl_atr_multiplier", 1.0, 4.0)
@@ -1336,7 +1394,9 @@ def run_algofinder(task_id: str, db_path: Path, session_id: str,
 
 def _describe_rules(params: dict, selected: list) -> str:
     """Convert params dict to human-readable rule description."""
-    lines = ["ENTRY CONDITIONS:"]
+    trigger_logic = params.get("trigger_logic", "and")
+    trigger_label = "ANY trigger (OR)" if trigger_logic == "or" else "ALL conditions (AND)"
+    lines = [f"ENTRY CONDITIONS  [{trigger_label}]:"]
     active_mas   = []
     active_bands = []
 
@@ -1348,22 +1408,25 @@ def _describe_rules(params: dict, selected: list) -> str:
             continue
         kind = spec["type"]
 
+        t_tag = " [trigger]" if trigger_logic == "or" and kind in ("osc", "band_pct", "band_lower", "cdl", "cross_above", "cross_below") else ""
         if kind in ("osc", "band_pct", "lt"):
-            lines.append(f"  • {col} < {params[f'thresh_{col}']:.4g}")
+            lines.append(f"  • {col} < {params[f'thresh_{col}']:.4g}{t_tag}")
         elif kind == "gt":
             lines.append(f"  • {col} > {params[f'thresh_{col}']:.4g}")
         elif kind == "sign":
             lines.append(f"  • {col} > 0")
         elif kind == "flag":
             lines.append(f"  • {col} = Bullish")
+        elif kind == "cdl":
+            lines.append(f"  • {spec.get('label', col)} pattern{t_tag}")
         elif kind == "ma":
             lines.append(f"  • close > {col}")
             active_mas.append((_ma_period(col), col))
         elif kind == "band_lower":
-            lines.append(f"  • close < {col}  (oversold below lower band)")
+            lines.append(f"  • close < {col}  (oversold below lower band){t_tag}")
             active_bands.append(col)
         elif kind in ("cross_above", "cross_below"):
-            lines.append(f"  • {spec['label']}  [crossover — 1 bar]")
+            lines.append(f"  • {spec['label']}  [crossover — 1 bar]{t_tag}")
 
     # Derived cross-conditions
     active_mas.sort()
