@@ -21,17 +21,18 @@
         <small class="text-muted">Python — define entry_signal column</small>
       </div>
       <div class="card-body p-2">
-        <label class="form-label small text-muted mb-1">populate_entry_signal(df) body</label>
+        <label class="form-label small text-muted mb-1">Define <code>populate_entry_signal(df)</code> — must set <code>df['entry_signal']</code> and <code>return df</code></label>
         <textarea name="entry_code" class="form-control caf-input font-monospace"
-                  rows="7" style="font-size:12px;resize:vertical"
-                  placeholder="# Example:
-df['entry_signal'] = (
-    (df['RSI_14'] < 35) &
-    (df['MACD_hist'] > 0) &
-    (df['EMA_20'] > df['EMA_50'])
-).astype(int)
-return df">{{ saved_cfg.entry_code if saved_cfg else '' }}</textarea>
-        <small class="text-muted">Leave blank to use BaseStrategy default logic.</small>
+                  rows="8" style="font-size:12px;resize:vertical"
+                  placeholder="def populate_entry_signal(df):
+    df['entry_signal'] = (
+        (df['RSI_14'] < 35) &
+        (df['MACD_hist'] > 0) &
+        (df['close'] > df['EMA_50']) &
+        (df['ADX_14'] > 20)
+    ).astype(int)
+    return df">{{ saved_cfg.entry_code if saved_cfg else '' }}</textarea>
+        <small class="text-muted">Leave blank to use default logic. Write a complete <code>def</code> function — <strong>not</strong> just the body.</small>
       </div>
     </div>
 
@@ -43,13 +44,14 @@ return df">{{ saved_cfg.entry_code if saved_cfg else '' }}</textarea>
       </div>
       <div class="card-body p-2">
         <textarea name="exit_code" class="form-control caf-input font-monospace"
-                  rows="4" style="font-size:12px;resize:vertical"
-                  placeholder="# Optional exit signal (overrides RSI exit)
-df['exit_signal'] = (
-    (df['RSI_14'] > 70) |
-    (df['EMA_20'] < df['EMA_50'])
-).astype(int)
-return df">{{ saved_cfg.exit_code if saved_cfg else '' }}</textarea>
+                  rows="6" style="font-size:12px;resize:vertical"
+                  placeholder="def populate_exit_signal(df):
+    df['exit_signal'] = (
+        (df['RSI_14'] > 70) |
+        (df['EMA_20'] < df['EMA_50'])
+    ).astype(int)
+    return df">{{ saved_cfg.exit_code if saved_cfg else '' }}</textarea>
+        <small class="text-muted">Optional. Write a complete <code>def</code> function. Leave blank to use default RSI-based exit.</small>
       </div>
     </div>
 
