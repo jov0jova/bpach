@@ -107,7 +107,8 @@ def _ic_for_indicator(series: pd.Series, forward_returns: dict[int, pd.Series],
             window = max(30, len(aligned) // 5)
             x_rank = aligned.iloc[:, 0].rank()
             y_rank = aligned.iloc[:, 1].rank()
-            rolling_corr = x_rank.rolling(window=window, min_periods=max(20, window // 2)).corr(y_rank)
+            with np.errstate(invalid="ignore", divide="ignore"):
+                rolling_corr = x_rank.rolling(window=window, min_periods=max(20, window // 2)).corr(y_rank)
             step = max(1, len(aligned) // 20)
             roll_ics = [v for v in rolling_corr.iloc[::step].tolist() if not np.isnan(v)]
             if len(roll_ics) >= 3:

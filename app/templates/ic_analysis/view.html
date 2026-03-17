@@ -127,6 +127,7 @@
           <th>IC 5-bar</th>
           <th>IC 10-bar</th>
           <th>IC 20-bar</th>
+          <th>IC 40-bar</th>
           <th>Best Regime</th>
         </tr>
       </thead>
@@ -177,6 +178,9 @@
           </td>
           <td class="{{ 'text-success' if r.ic_20 and r.ic_20 | abs > 0.05 else 'text-muted' }}">
             {{ '%.3f' | format(r.ic_20) if r.ic_20 is not none else '—' }}
+          </td>
+          <td class="{{ 'text-success' if r.ic_40 and r.ic_40 | abs > 0.05 else 'text-muted' }}">
+            {{ '%.3f' | format(r.ic_40) if r.ic_40 is not none else '—' }}
           </td>
           <td>
             {% if r.best_regime %}

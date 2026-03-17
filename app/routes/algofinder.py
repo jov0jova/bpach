@@ -83,6 +83,8 @@ def run(session_id):
         "multi_objective":     multi_objective,
         "ic_result":           ic_result,
         "min_oos_trades":      int(request.form.get("min_oos_trades", 5)),
+        "n_jobs":              int(request.form.get("n_jobs", 2)),
+        "max_pairs":           int(request.form.get("max_pairs", 30)),
     }
 
     if mode == "path_a" and session.get("entry_logic"):

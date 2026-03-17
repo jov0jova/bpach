@@ -10,6 +10,11 @@ Features
   • Dynamic pairlist (subset of session pairs)
   • Custom entry/exit logic via Python code editor
   • Walk-forward optimization (rolling or anchored windows)
+  • True holdout set — last N% of data reserved; never seen during WFO/Optuna
+  • Monte Carlo simulation — outcome distribution from resampled trades
+  • Bootstrap confidence intervals — CI on Sharpe, Win Rate, Max DD
+  • Portfolio-level metrics — combined equity curve across all pairs
+  • Benchmark comparison — buy-and-hold alpha
   • Rich metrics: Sharpe, Sortino, Calmar, Expectancy, Recovery Factor,
     Profit Factor, per-pair breakdown
 """
@@ -25,6 +30,14 @@ import pandas as pd
 from .. import models as m
 from ..strategies.base import BaseStrategy, CodeStrategy
 from ..utils.parquet import parquet_path
+from .statistics import (
+    bootstrap_ci,
+    compute_alpha,
+    compute_benchmark,
+    monte_carlo_simulation,
+    permutation_test,
+    portfolio_metrics,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -341,6 +354,10 @@ def _walk_forward_backtest(df: pd.DataFrame,
 
     anchored=True  → expanding train window from bar 0.
     anchored=False → rolling fixed-size windows.
+
+    IMPORTANT: this function should only be called on the non-holdout portion
+    of the data (first 80%). The holdout slice is evaluated separately in
+    run_backtest() after all WFO/optimization is done.
     """
     n         = len(df)
     fold_size = n // n_splits
@@ -421,7 +438,8 @@ def run_backtest(task_id: str, db_path: Path, session_id: str,
         sl_mode, sl_pct, sl_atr_period, sl_atr_multiplier,
         tp_mode, tp_pct, tp_atr_period, tp_atr_multiplier, tp_rr_ratio,
         trail_mode, trail_pct, trail_atr_period, trail_atr_multiplier,
-        wfo_splits, wfo_train_ratio, wfo_anchored
+        wfo_splits, wfo_train_ratio, wfo_anchored,
+        holdout_pct   (default 0.20 → last 20% of data reserved as true holdout)
     """
     def progress(p, total, msg):
         m.update_task(db_path, task_id, progress=p, total=total, message=msg)
@@ -449,6 +467,7 @@ def run_backtest(task_id: str, db_path: Path, session_id: str,
     n_splits         = int(config.get("wfo_splits", 5))
     train_ratio      = float(config.get("wfo_train_ratio", 0.7))
     wfo_anchored     = bool(config.get("wfo_anchored", False))
+    holdout_pct      = float(config.get("holdout_pct", 0.20))   # ← TRUE HOLDOUT
     primary_tf       = timeframes[0] if timeframes else "1h"
 
     bt_kwargs = dict(
@@ -495,6 +514,11 @@ def run_backtest(task_id: str, db_path: Path, session_id: str,
     pair_results     = []
     pairs_profitable = 0
 
+    # Per-pair trade lists for portfolio analysis and holdout
+    pair_trade_lists = {}
+    holdout_results  = []
+    benchmark_results = []
+
     for idx, pair in enumerate(active):
         if stop_event and stop_event.is_set():
             break
@@ -504,23 +528,54 @@ def run_backtest(task_id: str, db_path: Path, session_id: str,
         df = _load_df(parquet_dir, session_id, symbol, primary_tf)
         if df is None:
             continue
+
+        # ── HOLDOUT SPLIT ─────────────────────────────────────────────────────
+        # Reserve the last holdout_pct of rows; WFO only sees the first portion.
+        # This slice is NEVER seen during optimization — it is tested once here.
+        n_rows       = len(df)
+        holdout_n    = max(20, int(n_rows * holdout_pct))
+        wfo_df       = df.iloc[:n_rows - holdout_n].copy()
+        holdout_df   = df.iloc[n_rows - holdout_n:].copy()
+        # ─────────────────────────────────────────────────────────────────────
+
         try:
-            df = strategy.run(df)
+            wfo_df_run = strategy.run(wfo_df)
         except Exception as e:
             logger.warning("Strategy failed on %s: %s", symbol, e)
             continue
-        if "entry_signal" not in df.columns or len(df) < 100:
+        if "entry_signal" not in wfo_df_run.columns or len(wfo_df_run) < 100:
             continue
 
-        full = _simple_backtest(df, **bt_kwargs)
+        # Full backtest on WFO portion (for equity curve / trade list)
+        full = _simple_backtest(wfo_df_run, **bt_kwargs)
 
+        # Walk-forward on WFO portion only
         try:
             wfo = _walk_forward_backtest(
-                df, strategy, n_splits, train_ratio,
+                wfo_df_run, strategy, n_splits, train_ratio,
                 bt_kwargs, fast_mode=True, anchored=wfo_anchored)
             all_wfo.append(wfo)
         except Exception as e:
             logger.warning("WFO failed on %s: %s", symbol, e)
+
+        # ── TRUE HOLDOUT EVALUATION ───────────────────────────────────────────
+        # Run strategy on the held-out slice (never touched during WFO / search)
+        try:
+            holdout_run = strategy.run(holdout_df)
+            if "entry_signal" in holdout_run.columns and len(holdout_run) >= 20:
+                h_result = _simple_backtest(holdout_run, **bt_kwargs)
+                holdout_results.append(h_result)
+        except Exception as e:
+            logger.warning("Holdout failed on %s: %s", symbol, e)
+        # ─────────────────────────────────────────────────────────────────────
+
+        # ── BENCHMARK: buy-and-hold on full df ────────────────────────────────
+        try:
+            bm = compute_benchmark(df, initial_capital=initial_capital)
+            benchmark_results.append(bm)
+        except Exception as e:
+            logger.warning("Benchmark failed on %s: %s", symbol, e)
+        # ─────────────────────────────────────────────────────────────────────
 
         if full.get("total_return", 0) > 0:
             pairs_profitable += 1
@@ -537,6 +592,8 @@ def run_backtest(task_id: str, db_path: Path, session_id: str,
             "profit_factor": full.get("profit_factor", 0),
             "expectancy":    full.get("expectancy", 0),
         })
+
+        pair_trade_lists[symbol] = full.get("trades_list", [])
 
         for t in full.get("trades_list", []):
             all_trades.append({
@@ -579,6 +636,48 @@ def run_backtest(task_id: str, db_path: Path, session_id: str,
     recovery = abs(is_ret) / max_dd if max_dd > 0 else 0.0
     avg_dur = float(np.mean([t["duration_bars"] for t in all_trades])) if all_trades else 0
 
+    # ── HOLDOUT AGGREGATE ─────────────────────────────────────────────────────
+    holdout_return  = _avg(holdout_results, "total_return")
+    holdout_sharpe  = _avg(holdout_results, "sharpe_ratio")
+    holdout_trades  = int(sum(r.get("total_trades", 0) for r in holdout_results))
+    holdout_win_rate = _avg(holdout_results, "win_rate")
+    holdout_max_dd  = _avg(holdout_results, "max_drawdown")
+    holdout_pf      = _avg(holdout_results, "profit_factor")
+    # ─────────────────────────────────────────────────────────────────────────
+
+    # ── BENCHMARK AGGREGATE ───────────────────────────────────────────────────
+    benchmark_return = _avg(benchmark_results, "benchmark_return")
+    benchmark_sharpe = _avg(benchmark_results, "benchmark_sharpe")
+    alpha            = compute_alpha(is_ret, benchmark_return)
+    # ─────────────────────────────────────────────────────────────────────────
+
+    # ── MONTE CARLO SIMULATION ────────────────────────────────────────────────
+    progress(len(active), len(active) + 1, "Running Monte Carlo simulation…")
+    all_trades_for_mc = [t for tl in pair_trade_lists.values() for t in tl]
+    mc_result = {}
+    boot_ci   = {}
+    perm_test = {}
+    try:
+        if len(all_trades_for_mc) >= 10:
+            mc_result = monte_carlo_simulation(
+                all_trades_for_mc, n_sims=2000,
+                initial_capital=initial_capital)
+            boot_ci = bootstrap_ci(
+                all_trades_for_mc, n_boot=1000,
+                initial_capital=initial_capital)
+            perm_test = permutation_test(all_trades_for_mc, n_perms=1000)
+    except Exception as e:
+        logger.warning("Monte Carlo / bootstrap failed: %s", e)
+    # ─────────────────────────────────────────────────────────────────────────
+
+    # ── PORTFOLIO METRICS ─────────────────────────────────────────────────────
+    port_metrics = {}
+    try:
+        port_metrics = portfolio_metrics(pair_trade_lists, initial_capital=initial_capital)
+    except Exception as e:
+        logger.warning("Portfolio metrics failed: %s", e)
+    # ─────────────────────────────────────────────────────────────────────────
+
     m.update_backtest_run(db_path, run_id,
         status="done",
         total_trades=total,
@@ -591,6 +690,29 @@ def run_backtest(task_id: str, db_path: Path, session_id: str,
         oos_return=oos_ret,
         oos_win_rate=_avg(all_wfo, "oos_win_rate"),
         completed_at=datetime.now(timezone.utc),
+        # New fields
+        holdout_return=holdout_return,
+        holdout_sharpe=holdout_sharpe,
+        holdout_trades=holdout_trades,
+        holdout_win_rate=holdout_win_rate,
+        holdout_max_dd=holdout_max_dd,
+        benchmark_return=benchmark_return,
+        benchmark_sharpe=benchmark_sharpe,
+        alpha=alpha,
+        portfolio_sharpe=port_metrics.get("portfolio_sharpe", 0.0),
+        portfolio_maxdd=port_metrics.get("portfolio_maxdd", 0.0),
+        portfolio_return=port_metrics.get("portfolio_return", 0.0),
+        mc_sharpe_p5=mc_result.get("sharpe_p5", 0.0),
+        mc_sharpe_p50=mc_result.get("sharpe_p50", 0.0),
+        mc_sharpe_p95=mc_result.get("sharpe_p95", 0.0),
+        mc_maxdd_p5=mc_result.get("maxdd_p5", 0.0),
+        mc_maxdd_p50=mc_result.get("maxdd_p50", 0.0),
+        mc_maxdd_p95=mc_result.get("maxdd_p95", 0.0),
+        mc_return_p5=mc_result.get("total_return_p5", 0.0),
+        mc_return_p50=mc_result.get("total_return_p50", 0.0),
+        mc_return_p95=mc_result.get("total_return_p95", 0.0),
+        p_value=perm_test.get("p_value", 1.0),
+        is_significant=perm_test.get("is_significant", False),
     )
 
     result_payload = {
@@ -604,9 +726,32 @@ def run_backtest(task_id: str, db_path: Path, session_id: str,
         "pair_results": pair_results,
         "oos_profit_factor": _avg(all_wfo, "oos_profit_factor"),
         "oos_expectancy": _avg(all_wfo, "oos_expectancy"),
+        # Holdout
+        "holdout_return":    holdout_return,
+        "holdout_sharpe":    holdout_sharpe,
+        "holdout_trades":    holdout_trades,
+        "holdout_win_rate":  holdout_win_rate,
+        "holdout_max_dd":    holdout_max_dd,
+        "holdout_pf":        holdout_pf,
+        "holdout_pct":       holdout_pct,
+        # Benchmark
+        "benchmark_return":  benchmark_return,
+        "benchmark_sharpe":  benchmark_sharpe,
+        "alpha":             alpha,
+        # Monte Carlo
+        "mc": mc_result,
+        # Bootstrap CI
+        "bootstrap_ci": boot_ci,
+        # Permutation test
+        "permutation_test": perm_test,
+        # Portfolio
+        "portfolio": port_metrics,
     }
-    progress(len(active), len(active),
+
+    progress(len(active) + 1, len(active) + 1,
              f"Done: {total} trades on {len(pair_results)} pairs | "
              f"WR={wr:.1%} PF={pf:.2f} Sharpe={sharpe:.2f} "
-             f"IS={is_ret:+.1f}% OOS={oos_ret:+.1f}%")
+             f"IS={is_ret:+.1f}% OOS={oos_ret:+.1f}% "
+             f"Holdout={holdout_return:+.1f}% "
+             f"p={perm_test.get('p_value', 1.0):.3f}")
     m.update_task(db_path, task_id, status="done", result=result_payload)

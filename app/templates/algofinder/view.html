@@ -104,6 +104,29 @@
           <small class="text-muted">Strategies with fewer OOS trades are discarded as invalid.</small>
         </div>
 
+        <div class="row g-2 mb-3">
+          <div class="col-6">
+            <label class="form-label small">Parallel Workers</label>
+            <select name="n_jobs" class="form-select caf-input form-select-sm">
+              <option value="1">1 — least RAM</option>
+              <option value="2" selected>2 — balanced</option>
+              <option value="4">4 — faster</option>
+              <option value="8">8 — max speed</option>
+            </select>
+            <small class="text-muted">Lower = less RAM. Crash? Set to 1.</small>
+          </div>
+          <div class="col-6">
+            <label class="form-label small">Max Pairs to Test</label>
+            <select name="max_pairs" class="form-select caf-input form-select-sm">
+              <option value="10">10 — fast / low RAM</option>
+              <option value="20">20</option>
+              <option value="30" selected>30 — balanced</option>
+              <option value="50">50 — thorough</option>
+            </select>
+            <small class="text-muted">Each pair ×workers held in RAM.</small>
+          </div>
+        </div>
+
         <!-- Multi-objective toggle -->
         <div class="form-check mb-3">
           <input class="form-check-input" type="checkbox" name="multi_objective" value="1" id="multi_obj">
@@ -245,6 +268,19 @@
             <span class="badge bg-dark border">Template: {{ tr.template }}</span>
             {% if tr.get('ic_guided') %}<span class="badge bg-success">IC-guided</span>{% endif %}
             {% if tr.get('multi_objective') %}<span class="badge bg-primary">Multi-obj NSGA-II</span>{% endif %}
+            {% if tr.get('n_significant') is not none %}
+              <span class="badge {{ 'bg-success' if tr.n_significant > 0 else 'bg-danger' }}">
+                FDR significant: {{ tr.n_significant }}/{{ tr.top_count }}
+              </span>
+            {% endif %}
+          </div>
+          {% endif %}
+          {% if tr.get('n_significant', 0) == 0 and tr.get('top_count', 0) > 0 %}
+          <div class="alert alert-warning py-2 mt-2 small mb-0">
+            <i class="bi bi-exclamation-triangle me-1"></i>
+            <strong>None of the strategies passed FDR correction (α=0.05).</strong>
+            After correcting for {{ tr.top_count }} comparisons, no strategy's returns are statistically
+            distinguishable from random. Try more trials, more data, or a different template.
           </div>
           {% endif %}
         {% endif %}
@@ -253,10 +289,19 @@
 
     <!-- Results table -->
     {% if results %}
+    <!-- FDR explanation -->
+    {% set n_sig = results | selectattr('is_significant') | list | length %}
+    <div class="alert {% if n_sig > 0 %}alert-success{% else %}alert-warning{% endif %} py-2 mb-3 small">
+      <i class="bi {% if n_sig > 0 %}bi-shield-check{% else %}bi-exclamation-triangle{% endif %} me-1"></i>
+      <strong>FDR Correction (Benjamini-Hochberg, α=0.05):</strong>
+      {{ n_sig }} of {{ results|length }} strategies are statistically significant after correcting for multiple comparisons.
+      <span class="text-muted ms-1">Strategies tested {{ results[0].n_trials_tested if results[0].n_trials_tested else '—' }} times via Optuna; FDR limits false discoveries to ≤5%.</span>
+    </div>
+
     <div class="card caf-card">
       <div class="card-header caf-card-header d-flex justify-content-between align-items-center">
         <span><i class="bi bi-trophy-fill me-2 text-warning"></i>Top Strategies</span>
-        <span class="badge bg-secondary">{{ results|length }} found</span>
+        <span class="badge bg-secondary">{{ results|length }} found · {{ n_sig }} significant</span>
       </div>
       <div class="card-body p-0">
         <div class="table-responsive">
@@ -265,25 +310,43 @@
               <tr>
                 <th>#</th>
                 <th>Name</th>
+                <th class="text-end">Sig?</th>
+                <th class="text-end">p-val</th>
+                <th class="text-end">adj-p</th>
                 <th class="text-end">OOS Ret</th>
                 <th class="text-end">IS Ret</th>
                 <th class="text-end">WR</th>
                 <th class="text-end">PF</th>
                 <th class="text-end">Sharpe</th>
+                <th class="text-end">Sortino</th>
                 <th class="text-end">Calmar</th>
+                <th class="text-end">Max DD</th>
+                <th class="text-end">Expect.</th>
                 <th class="text-end">Pairs</th>
-                <th class="text-end">Template</th>
+                <th class="text-end">Regime</th>
                 <th></th>
               </tr>
             </thead>
             <tbody>
               {% for r in results %}
-              <tr>
+              <tr class="{{ 'table-success-subtle' if r.is_significant else '' }}">
                 <td>
                   {% if r.rank == 1 %}<span class="text-warning">⭐</span>{% endif %}
                   {{ r.rank }}
                 </td>
                 <td><small class="text-info">{{ r.strategy_name }}</small></td>
+                <!-- Significance -->
+                <td class="text-end">
+                  {% if r.is_significant %}
+                    <span class="badge bg-success" title="Statistically significant at FDR α=0.05">✓ sig</span>
+                  {% elif r.p_value < 0.1 %}
+                    <span class="badge bg-warning text-dark" title="Marginal significance p<0.10">~ p&lt;.10</span>
+                  {% else %}
+                    <span class="badge bg-danger" title="Not significant">✗</span>
+                  {% endif %}
+                </td>
+                <td class="text-end text-muted"><small>{{ '%.3f'|format(r.p_value) if r.p_value else '—' }}</small></td>
+                <td class="text-end text-muted"><small>{{ '%.3f'|format(r.adjusted_p) if r.adjusted_p else '—' }}</small></td>
                 <td class="text-end {{ 'text-success fw-bold' if r.oos_return > 0 else 'text-danger' }}">
                   {{ '%+.1f%%'|format(r.oos_return) }}</td>
                 <td class="text-end {{ 'text-success' if r.is_return > 0 else 'text-danger' }}">
@@ -293,16 +356,22 @@
                   {{ '%.2f'|format(r.profit_factor) }}</td>
                 <td class="text-end {{ 'text-success' if r.sharpe > 1 else 'text-muted' }}">
                   {{ '%.2f'|format(r.sharpe) }}</td>
+                <td class="text-end {{ 'text-success' if r.sortino_ratio and r.sortino_ratio > 1 else 'text-muted' }}">
+                  {{ '%.2f'|format(r.sortino_ratio) if r.sortino_ratio else '—' }}</td>
                 <td class="text-end text-muted">
-                  {{ '%.2f'|format(r.calmar_ratio) if r.get('calmar_ratio') else '—' }}</td>
+                  {{ '%.2f'|format(r.calmar_ratio) if r.calmar_ratio else '—' }}</td>
+                <td class="text-end text-danger">
+                  {{ '-%.1f%%'|format(r.max_drawdown) if r.max_drawdown else '—' }}</td>
+                <td class="text-end {{ 'text-success' if r.expectancy and r.expectancy > 0 else 'text-muted' }}">
+                  {{ '%.4f'|format(r.expectancy) if r.expectancy else '—' }}</td>
                 <td class="text-end">
                   <span class="badge {{ 'bg-success' if r.pair_coverage >= 0.5 else 'bg-secondary' }}">
-                    {{ '%.0f%%'|format(r.pair_coverage * 100) if r.get('pair_coverage') else '—' }}
+                    {{ '%.0f%%'|format(r.pair_coverage * 100) if r.pair_coverage else '—' }}
                   </span>
                 </td>
                 <td class="text-end">
-                  <span class="badge bg-dark border small">
-                    {{ r.template if r.get('template') else 'free' }}
+                  <span class="badge bg-dark border small" style="font-size:10px">
+                    {{ r.regime if r.regime else '—' }}
                   </span>
                 </td>
                 <td>
@@ -311,7 +380,7 @@
                 </td>
               </tr>
               <tr class="rules-row" id="rules_{{ loop.index0 }}" style="display:none">
-                <td colspan="11">
+                <td colspan="17">
                   <pre class="p-2 bg-dark rounded small text-light mb-0"
                        style="font-size:11px;white-space:pre-wrap">{{ r.rules_description }}</pre>
                   {% if r.params %}

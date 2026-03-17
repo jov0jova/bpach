@@ -259,18 +259,59 @@ def init_db(db_path: str | Path) -> None:
 
     # Extend backtest_runs with richer metrics
     for col, typedef in [
-        ("profit_factor_oos", "DOUBLE DEFAULT 0"),
-        ("calmar_ratio",      "DOUBLE DEFAULT 0"),
-        ("sortino_ratio",     "DOUBLE DEFAULT 0"),
-        ("expectancy",        "DOUBLE DEFAULT 0"),
-        ("recovery_factor",   "DOUBLE DEFAULT 0"),
-        ("config_id",         "TEXT DEFAULT ''"),
-        ("config_snapshot",   "TEXT DEFAULT '{}'"),
-        ("pairs_backtested",  "INTEGER DEFAULT 0"),
-        ("pairs_profitable",  "INTEGER DEFAULT 0"),
+        ("profit_factor_oos",  "DOUBLE DEFAULT 0"),
+        ("calmar_ratio",       "DOUBLE DEFAULT 0"),
+        ("sortino_ratio",      "DOUBLE DEFAULT 0"),
+        ("expectancy",         "DOUBLE DEFAULT 0"),
+        ("recovery_factor",    "DOUBLE DEFAULT 0"),
+        ("config_id",          "TEXT DEFAULT ''"),
+        ("config_snapshot",    "TEXT DEFAULT '{}'"),
+        ("pairs_backtested",   "INTEGER DEFAULT 0"),
+        ("pairs_profitable",   "INTEGER DEFAULT 0"),
+        # True holdout (last N% of data, never seen during optimization)
+        ("holdout_return",     "DOUBLE DEFAULT 0"),
+        ("holdout_sharpe",     "DOUBLE DEFAULT 0"),
+        ("holdout_trades",     "INTEGER DEFAULT 0"),
+        ("holdout_win_rate",   "DOUBLE DEFAULT 0"),
+        ("holdout_max_dd",     "DOUBLE DEFAULT 0"),
+        # Benchmark (buy-and-hold) comparison
+        ("benchmark_return",   "DOUBLE DEFAULT 0"),
+        ("benchmark_sharpe",   "DOUBLE DEFAULT 0"),
+        ("alpha",              "DOUBLE DEFAULT 0"),
+        # Portfolio-level (all pairs combined)
+        ("portfolio_sharpe",   "DOUBLE DEFAULT 0"),
+        ("portfolio_maxdd",    "DOUBLE DEFAULT 0"),
+        ("portfolio_return",   "DOUBLE DEFAULT 0"),
+        # Monte Carlo percentiles (positive number = good for return/sharpe, bad for maxdd)
+        ("mc_sharpe_p5",       "DOUBLE DEFAULT 0"),
+        ("mc_sharpe_p50",      "DOUBLE DEFAULT 0"),
+        ("mc_sharpe_p95",      "DOUBLE DEFAULT 0"),
+        ("mc_maxdd_p5",        "DOUBLE DEFAULT 0"),
+        ("mc_maxdd_p50",       "DOUBLE DEFAULT 0"),
+        ("mc_maxdd_p95",       "DOUBLE DEFAULT 0"),
+        ("mc_return_p5",       "DOUBLE DEFAULT 0"),
+        ("mc_return_p50",      "DOUBLE DEFAULT 0"),
+        ("mc_return_p95",      "DOUBLE DEFAULT 0"),
+        # Permutation test significance
+        ("p_value",            "DOUBLE DEFAULT 1.0"),
+        ("is_significant",     "BOOLEAN DEFAULT FALSE"),
     ]:
         try:
             con.execute(f"ALTER TABLE backtest_runs ADD COLUMN {col} {typedef}")
+        except Exception:
+            pass
+
+    # Extend algo_results with significance and holdout metrics
+    for col, typedef in [
+        ("p_value",          "DOUBLE DEFAULT 1.0"),
+        ("adjusted_p",       "DOUBLE DEFAULT 1.0"),
+        ("is_significant",   "BOOLEAN DEFAULT FALSE"),
+        ("holdout_return",   "DOUBLE DEFAULT 0"),
+        ("holdout_sharpe",   "DOUBLE DEFAULT 0"),
+        ("n_trials_tested",  "INTEGER DEFAULT 0"),
+    ]:
+        try:
+            con.execute(f"ALTER TABLE algo_results ADD COLUMN {col} {typedef}")
         except Exception:
             pass
 
@@ -498,9 +539,23 @@ def create_backtest_run(db_path, session_id: str, strategy_code: str, params: di
 
 
 def update_backtest_run(db_path, run_id: str, **kwargs) -> None:
-    allowed = {"status","total_trades","win_rate","profit_factor","sharpe_ratio",
-               "max_drawdown","total_return","avg_trade_duration",
-               "oos_return","oos_win_rate","error_msg","completed_at"}
+    allowed = {
+        "status","total_trades","win_rate","profit_factor","sharpe_ratio",
+        "max_drawdown","total_return","avg_trade_duration",
+        "oos_return","oos_win_rate","error_msg","completed_at",
+        # Holdout
+        "holdout_return","holdout_sharpe","holdout_trades","holdout_win_rate","holdout_max_dd",
+        # Benchmark
+        "benchmark_return","benchmark_sharpe","alpha",
+        # Portfolio
+        "portfolio_sharpe","portfolio_maxdd","portfolio_return",
+        # Monte Carlo
+        "mc_sharpe_p5","mc_sharpe_p50","mc_sharpe_p95",
+        "mc_maxdd_p5","mc_maxdd_p50","mc_maxdd_p95",
+        "mc_return_p5","mc_return_p50","mc_return_p95",
+        # Permutation test
+        "p_value","is_significant",
+    }
     fields, values = [], []
     for k, v in kwargs.items():
         if k in allowed:
@@ -538,18 +593,29 @@ def list_backtest_runs(db_path, session_id: str) -> list:
 
 def get_backtest_run(db_path, run_id: str) -> dict | None:
     con = _conn(db_path)
-    row = con.execute("SELECT * FROM backtest_runs WHERE id=?", [run_id]).fetchone()
+    cur = con.execute("SELECT * FROM backtest_runs WHERE id=?", [run_id])
+    col_names = [desc[0] for desc in cur.description]
+    row = cur.fetchone()
     con.close()
     if not row:
         return None
-    cols = ["id","session_id","strategy_code","strategy_params","status","total_trades",
-            "win_rate","profit_factor","sharpe_ratio","max_drawdown","total_return",
-            "avg_trade_duration","oos_return","oos_win_rate","created_at","completed_at","error_msg"]
-    d = dict(zip(cols, row))
+    d = dict(zip(col_names, row))
     try:
         d["strategy_params"] = json.loads(d["strategy_params"])
     except Exception:
         d["strategy_params"] = {}
+    # Ensure new fields have defaults for old rows
+    for field, default in [
+        ("holdout_return", 0.0), ("holdout_sharpe", 0.0), ("holdout_trades", 0),
+        ("holdout_win_rate", 0.0), ("holdout_max_dd", 0.0),
+        ("benchmark_return", 0.0), ("benchmark_sharpe", 0.0), ("alpha", 0.0),
+        ("portfolio_sharpe", 0.0), ("portfolio_maxdd", 0.0), ("portfolio_return", 0.0),
+        ("mc_sharpe_p5", 0.0), ("mc_sharpe_p50", 0.0), ("mc_sharpe_p95", 0.0),
+        ("mc_maxdd_p5", 0.0), ("mc_maxdd_p50", 0.0), ("mc_maxdd_p95", 0.0),
+        ("mc_return_p5", 0.0), ("mc_return_p50", 0.0), ("mc_return_p95", 0.0),
+        ("p_value", 1.0), ("is_significant", False),
+    ]:
+        d.setdefault(field, default)
     return d
 
 
@@ -643,8 +709,11 @@ def save_algo_result(db_path, session_id: str, run_id: str, rank: int,
             (id, session_id, run_id, rank, strategy_name, params, rules_description,
              is_return, oos_return, win_rate, sharpe, max_drawdown,
              profit_factor, calmar_ratio, sortino_ratio, expectancy,
-             pair_coverage, regime, template, created_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+             pair_coverage, regime, template,
+             p_value, adjusted_p, is_significant, holdout_return, holdout_sharpe,
+             n_trials_tested,
+             created_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     """, [
         str(uuid.uuid4()), session_id, run_id, rank, strategy_name,
         json.dumps(params), rules_description,
@@ -655,8 +724,24 @@ def save_algo_result(db_path, session_id: str, run_id: str, rank: int,
         metrics.get("sortino_ratio", 0), metrics.get("expectancy", 0),
         metrics.get("pair_coverage", 0),
         metrics.get("regime", "all"), metrics.get("template", "free"),
+        metrics.get("p_value", 1.0), metrics.get("adjusted_p", 1.0),
+        bool(metrics.get("is_significant", False)),
+        metrics.get("holdout_return", 0.0), metrics.get("holdout_sharpe", 0.0),
+        int(metrics.get("n_trials_tested", 0)),
         datetime.now(timezone.utc)
     ])
+    con.close()
+
+
+def update_algo_result_significance(db_path, result_id: str,
+                                    p_value: float, adjusted_p: float,
+                                    is_significant: bool) -> None:
+    """Update FDR-corrected significance for a single algo result."""
+    con = _conn(db_path)
+    con.execute(
+        "UPDATE algo_results SET p_value=?, adjusted_p=?, is_significant=? WHERE id=?",
+        [p_value, adjusted_p, is_significant, result_id]
+    )
     con.close()
 
 
@@ -737,6 +822,12 @@ def list_algo_results(db_path, session_id: str) -> list:
             d.setdefault(k, 0)
         d.setdefault("regime", "all")
         d.setdefault("template", "free")
+        d.setdefault("p_value", 1.0)
+        d.setdefault("adjusted_p", 1.0)
+        d.setdefault("is_significant", False)
+        d.setdefault("holdout_return", 0.0)
+        d.setdefault("holdout_sharpe", 0.0)
+        d.setdefault("n_trials_tested", 0)
         try:
             d["params"] = json.loads(d["params"])
         except Exception:
