@@ -973,18 +973,31 @@ def run_algofinder(task_id: str, db_path: Path, session_id: str,
              f"Template={template['label']} | Sampler={mode_desc} | "
              f"Regime={dominant_regime}")
 
-    # ── Create Optuna study ──────────────────────────────────────────────────
+    # ── Create Optuna study (persistent across runs) ─────────────────────────
+    optuna_db = db_path.parent / "optuna_studies.db"
+    storage = optuna.storages.RDBStorage(f"sqlite:///{optuna_db}")
+    study_name = f"{session_id}__{template_key}__{'multi' if multi_obj else 'single'}"
     if multi_obj:
         study = optuna.create_study(
+            study_name=study_name,
+            storage=storage,
+            load_if_exists=True,
             directions=["maximize", "maximize"],
             sampler=optuna.samplers.NSGAIISampler(seed=42),
         )
     else:
         study = optuna.create_study(
+            study_name=study_name,
+            storage=storage,
+            load_if_exists=True,
             direction="maximize",
             sampler=optuna.samplers.TPESampler(seed=42),
             pruner=optuna.pruners.MedianPruner(n_startup_trials=10, n_warmup_steps=0),
         )
+    prior_trials = len(study.trials)
+    if prior_trials:
+        progress(0, n_trials,
+                 f"Resuming study '{study_name}' — {prior_trials} trials already done")
 
     trial_count  = [0]
     counter_lock = threading.Lock()
@@ -1416,10 +1429,22 @@ def run_algofinder_path_a(task_id: str, db_path: Path, session_id: str,
 
     progress(0, n_trials, f"Running {n_trials} Path A trials on {len(dfs)} pairs…")
 
+    optuna_db_a = db_path.parent / "optuna_studies.db"
+    storage_a = optuna.storages.RDBStorage(f"sqlite:///{optuna_db_a}")
+    import hashlib as _hashlib
+    _entry_hash = _hashlib.md5(condition_code.encode()).hexdigest()[:8]
+    study_name_a = f"{session_id}__path_a__{_entry_hash}"
     study = optuna.create_study(
+        study_name=study_name_a,
+        storage=storage_a,
+        load_if_exists=True,
         direction="maximize",
         sampler=optuna.samplers.TPESampler(seed=42),
     )
+    prior_trials_a = len(study.trials)
+    if prior_trials_a:
+        progress(0, n_trials,
+                 f"Resuming Path A study — {prior_trials_a} trials already done")
     trial_count_a = [0]
     counter_lock_a = threading.Lock()
 
