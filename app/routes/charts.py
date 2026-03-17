@@ -9,9 +9,9 @@ from flask import Blueprint, abort, jsonify, render_template, request
 import app.models as m
 from app.config import Config
 from app.services.charts import (
-    DEFAULT_OVERLAYS, DEFAULT_PANES,
-    OVERLAY_GROUPS, PANE_GROUPS,
-    PRICE_OVERLAYS, PANE_INDICATORS,
+    DEFAULT_OVERLAYS, DEFAULT_PANES, DEFAULT_PATTERNS,
+    OVERLAY_GROUPS, PANE_GROUPS, CANDLE_PATTERN_GROUPS,
+    PRICE_OVERLAYS, PANE_INDICATORS, CANDLE_PATTERNS,
     build_chart,
 )
 from app.utils.parquet import parquet_path
@@ -40,10 +40,13 @@ def charts_view(session_id):
         timeframes=session.get("timeframes") or ["1h"],
         overlay_groups=OVERLAY_GROUPS,
         pane_groups=PANE_GROUPS,
+        candle_pattern_groups=CANDLE_PATTERN_GROUPS,
         price_overlays=PRICE_OVERLAYS,
         pane_indicators=PANE_INDICATORS,
+        candle_patterns=CANDLE_PATTERNS,
         default_overlays=DEFAULT_OVERLAYS,
         default_panes=DEFAULT_PANES,
+        default_patterns=DEFAULT_PATTERNS,
         layouts=layouts,
     )
 
@@ -58,6 +61,7 @@ def get_chart(session_id):
     timeframe    = data.get("timeframe", "1h")
     overlays     = data.get("overlays", [])
     panes        = data.get("panes", [])
+    patterns     = data.get("patterns", [])
     candle_limit = int(data.get("candle_limit", 500))
 
     path = parquet_path(Config.PARQUET_DIR, session_id, symbol, timeframe)
@@ -68,7 +72,7 @@ def get_chart(session_id):
     if df.empty:
         return jsonify({"error": f"{symbol}: dataset is empty"}), 404
 
-    chart_json = build_chart(df, symbol, timeframe, overlays, panes, candle_limit)
+    chart_json = build_chart(df, symbol, timeframe, overlays, panes, patterns, candle_limit)
     return jsonify({"chart": chart_json, "symbol": symbol, "candles": len(df)})
 
 
