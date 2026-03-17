@@ -73,6 +73,10 @@
        href="{{ url_for('analysis.analysis_view', session_id=session.id) }}">
       <i class="bi bi-bar-chart-fill me-2"></i>Trade Analysis
     </a>
+    <a class="nav-link caf-nav-link {% if request.endpoint and 'charts' in request.endpoint %}active{% endif %}"
+       href="{{ url_for('charts.charts_view', session_id=session.id) }}">
+      <i class="bi bi-graph-up-arrow me-2 text-success"></i>Charts
+    </a>
 
     <hr class="caf-hr my-2">
     {% endif %}

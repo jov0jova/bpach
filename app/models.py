@@ -315,6 +315,16 @@ def init_db(db_path: str | Path) -> None:
         except Exception:
             pass
 
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS chart_layouts (
+            id          TEXT PRIMARY KEY,
+            session_id  TEXT NOT NULL,
+            name        TEXT NOT NULL,
+            config      TEXT NOT NULL DEFAULT '{}',
+            created_at  TIMESTAMP NOT NULL
+        )
+    """)
+
     con.close()
 
 
@@ -839,6 +849,43 @@ def list_algo_results(db_path, session_id: str) -> list:
 def clear_algo_results(db_path, session_id: str) -> None:
     con = _conn(db_path)
     con.execute("DELETE FROM algo_results WHERE session_id=?", [session_id])
+    con.close()
+
+
+# ── Chart Layouts ─────────────────────────────────────────────────────────────
+
+def save_chart_layout(db_path, session_id: str, name: str, config: dict) -> str:
+    lid = str(uuid.uuid4())
+    con = _conn(db_path)
+    con.execute(
+        "INSERT INTO chart_layouts VALUES (?,?,?,?,?)",
+        [lid, session_id, name, json.dumps(config), datetime.now(timezone.utc)]
+    )
+    con.close()
+    return lid
+
+
+def list_chart_layouts(db_path, session_id: str) -> list:
+    con = _conn(db_path)
+    rows = con.execute(
+        "SELECT id, name, config, created_at FROM chart_layouts WHERE session_id=? ORDER BY created_at DESC",
+        [session_id]
+    ).fetchall()
+    con.close()
+    result = []
+    for row in rows:
+        d = {"id": row[0], "name": row[1], "created_at": row[3]}
+        try:
+            d["config"] = json.loads(row[2])
+        except Exception:
+            d["config"] = {}
+        result.append(d)
+    return result
+
+
+def delete_chart_layout(db_path, layout_id: str, session_id: str) -> None:
+    con = _conn(db_path)
+    con.execute("DELETE FROM chart_layouts WHERE id=? AND session_id=?", [layout_id, session_id])
     con.close()
 
 

@@ -1,0 +1,745 @@
+{% extends "base.html" %}
+
+{% block title %}Charts · {{ session.name }}{% endblock %}
+
+{% block head %}
+<style>
+  /* Full-bleed layout inside the content wrapper */
+  .charts-layout {
+    display: flex;
+    gap: 0;
+    margin: -8px -24px 0 -24px;
+    height: calc(100vh - 68px);
+    overflow: hidden;
+  }
+
+  /* Left control panel */
+  .charts-panel {
+    width: 270px;
+    min-width: 220px;
+    max-width: 320px;
+    background: #0d1117;
+    border-right: 1px solid #21262d;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    flex-shrink: 0;
+  }
+  .charts-panel-body {
+    overflow-y: auto;
+    flex: 1;
+    padding: 12px;
+    scrollbar-width: thin;
+    scrollbar-color: #30363d #0d1117;
+  }
+  .charts-panel-footer {
+    padding: 10px 12px;
+    border-top: 1px solid #21262d;
+    background: #0d1117;
+  }
+
+  /* Right chart area */
+  .charts-area {
+    flex: 1;
+    overflow-y: auto;
+    padding: 12px;
+    background: #010409;
+    scrollbar-width: thin;
+    scrollbar-color: #30363d #010409;
+  }
+
+  /* Section labels in left panel */
+  .ctrl-label {
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    color: #8b949e;
+    text-transform: uppercase;
+    margin: 12px 0 6px 0;
+  }
+  .ctrl-label:first-child { margin-top: 2px; }
+
+  /* Timeframe pill buttons */
+  .tf-btn {
+    padding: 3px 9px;
+    font-size: 12px;
+    border: 1px solid #30363d;
+    background: #161b22;
+    color: #c9d1d9;
+    border-radius: 20px;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+  .tf-btn:hover  { border-color: #58a6ff; color: #58a6ff; }
+  .tf-btn.active { background: #1f6feb; border-color: #1f6feb; color: #fff; }
+
+  /* Pair list */
+  .pair-list {
+    max-height: 180px;
+    overflow-y: auto;
+    border: 1px solid #21262d;
+    border-radius: 6px;
+    background: #161b22;
+    scrollbar-width: thin;
+    scrollbar-color: #30363d #161b22;
+  }
+  .pair-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 5px 8px;
+    font-size: 12px;
+    border-bottom: 1px solid #21262d;
+    cursor: pointer;
+    transition: background 0.1s;
+  }
+  .pair-item:last-child { border-bottom: none; }
+  .pair-item:hover { background: #1f2937; }
+  .pair-item input[type=checkbox] { cursor: pointer; accent-color: #58a6ff; }
+
+  /* Indicator accordion */
+  .ind-group { margin-bottom: 4px; }
+  .ind-group-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 5px 8px;
+    background: #161b22;
+    border: 1px solid #21262d;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 12px;
+    font-weight: 600;
+    color: #c9d1d9;
+    user-select: none;
+    transition: background 0.1s;
+  }
+  .ind-group-header:hover { background: #1f2937; }
+  .ind-group-body {
+    display: none;
+    padding: 4px 6px;
+    border: 1px solid #21262d;
+    border-top: none;
+    border-radius: 0 0 6px 6px;
+    background: #0d1117;
+  }
+  .ind-group-body.open { display: block; }
+  .ind-item {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    padding: 3px 4px;
+    font-size: 11.5px;
+    color: #8b949e;
+    cursor: pointer;
+    border-radius: 4px;
+    transition: background 0.1s;
+  }
+  .ind-item:hover { background: #1f2937; color: #c9d1d9; }
+  .ind-item input[type=checkbox] { cursor: pointer; accent-color: #58a6ff; flex-shrink: 0; }
+  .ind-swatch {
+    width: 10px; height: 10px;
+    border-radius: 2px;
+    flex-shrink: 0;
+  }
+
+  /* Candle limit select */
+  .candle-select {
+    background: #161b22;
+    border: 1px solid #30363d;
+    color: #c9d1d9;
+    border-radius: 6px;
+    padding: 4px 8px;
+    font-size: 12px;
+    width: 100%;
+  }
+  .candle-select:focus { outline: none; border-color: #58a6ff; }
+
+  /* Load charts button */
+  .btn-load {
+    width: 100%;
+    padding: 7px;
+    background: #238636;
+    border: none;
+    color: #fff;
+    border-radius: 6px;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.15s;
+  }
+  .btn-load:hover { background: #2ea043; }
+  .btn-load:active { background: #1a7f37; }
+
+  /* Chart cards */
+  .chart-card {
+    background: #0d1117;
+    border: 1px solid #21262d;
+    border-radius: 8px;
+    overflow: hidden;
+    margin-bottom: 12px;
+  }
+  .chart-card-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 12px;
+    border-bottom: 1px solid #21262d;
+    font-size: 13px;
+    font-weight: 600;
+    color: #e6edf3;
+  }
+  .chart-card-header .badge-tf {
+    font-size: 10px;
+    padding: 2px 7px;
+    background: #1f6feb22;
+    color: #58a6ff;
+    border: 1px solid #1f6feb55;
+    border-radius: 10px;
+  }
+  .chart-card-body {
+    min-height: 300px;
+    position: relative;
+  }
+  .chart-placeholder {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 300px;
+    color: #484f58;
+    font-size: 13px;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  /* Layouts list */
+  .layout-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 5px 8px;
+    font-size: 12px;
+    background: #161b22;
+    border: 1px solid #21262d;
+    border-radius: 6px;
+    margin-bottom: 4px;
+    gap: 6px;
+  }
+  .layout-item .layout-name {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    cursor: pointer;
+    color: #58a6ff;
+  }
+  .layout-item .layout-name:hover { text-decoration: underline; }
+  .layout-del {
+    background: none;
+    border: none;
+    color: #484f58;
+    cursor: pointer;
+    padding: 0 2px;
+    font-size: 13px;
+    line-height: 1;
+  }
+  .layout-del:hover { color: #f85149; }
+
+  /* Save layout input row */
+  .save-row {
+    display: flex;
+    gap: 6px;
+    margin-top: 6px;
+  }
+  .save-row input {
+    flex: 1;
+    background: #161b22;
+    border: 1px solid #30363d;
+    color: #c9d1d9;
+    border-radius: 6px;
+    padding: 4px 8px;
+    font-size: 12px;
+  }
+  .save-row input:focus { outline: none; border-color: #58a6ff; }
+  .save-row button {
+    background: #1f6feb;
+    border: none;
+    color: #fff;
+    border-radius: 6px;
+    padding: 4px 10px;
+    font-size: 12px;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .save-row button:hover { background: #388bfd; }
+
+  /* Search box */
+  .search-box {
+    width: 100%;
+    background: #161b22;
+    border: 1px solid #30363d;
+    color: #c9d1d9;
+    border-radius: 6px;
+    padding: 4px 8px;
+    font-size: 12px;
+    margin-bottom: 4px;
+  }
+  .search-box:focus { outline: none; border-color: #58a6ff; }
+
+  /* Empty state in chart area */
+  .charts-empty {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 100%;
+    min-height: 300px;
+    flex-direction: column;
+    gap: 10px;
+    color: #484f58;
+  }
+  .charts-empty i { font-size: 48px; }
+
+  /* Grid columns control */
+  .cols-toggle {
+    display: flex;
+    gap: 4px;
+    align-items: center;
+  }
+  .col-btn {
+    padding: 2px 8px;
+    font-size: 11px;
+    border: 1px solid #30363d;
+    background: #161b22;
+    color: #8b949e;
+    border-radius: 4px;
+    cursor: pointer;
+  }
+  .col-btn.active { border-color: #58a6ff; color: #58a6ff; background: #1f6feb22; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="charts-layout">
+
+  <!-- ── Left Control Panel ──────────────────────────────────────────────── -->
+  <div class="charts-panel">
+    <div class="charts-panel-body">
+
+      <!-- Timeframe -->
+      <div class="ctrl-label">Timeframe</div>
+      <div class="d-flex flex-wrap gap-1" id="tf-group">
+        {% for tf in timeframes %}
+        <button class="tf-btn {% if loop.first %}active{% endif %}"
+                data-tf="{{ tf }}" onclick="selectTf(this)">{{ tf }}</button>
+        {% endfor %}
+        {% for tf in ['1m','3m','5m','15m','30m','1h','2h','4h','6h','12h','1d','3d','1w','1M'] %}
+          {% if tf not in timeframes %}
+        <button class="tf-btn" data-tf="{{ tf }}" onclick="selectTf(this)">{{ tf }}</button>
+          {% endif %}
+        {% endfor %}
+      </div>
+
+      <!-- Candle window -->
+      <div class="ctrl-label">Candle window</div>
+      <select class="candle-select" id="candle-limit">
+        <option value="100">100 candles</option>
+        <option value="200">200 candles</option>
+        <option value="500" selected>500 candles</option>
+        <option value="1000">1 000 candles</option>
+        <option value="2000">2 000 candles</option>
+        <option value="99999">All candles</option>
+      </select>
+
+      <!-- Pairs -->
+      <div class="ctrl-label d-flex align-items-center justify-content-between">
+        <span>Pairs</span>
+        <span class="text-muted" id="pair-count" style="font-size:10px;text-transform:none;font-weight:400;"></span>
+      </div>
+      <input type="text" class="search-box" id="pair-search"
+             placeholder="Search pairs…" oninput="filterPairs(this.value)">
+      <div class="pair-list" id="pair-list">
+        {% if pairs %}
+          {% for p in pairs %}
+          <label class="pair-item" data-symbol="{{ p.symbol }}">
+            <input type="checkbox" class="pair-check" value="{{ p.symbol }}"
+                   {% if loop.index <= 4 %}checked{% endif %}
+                   onchange="updatePairCount()">
+            <span style="flex:1">{{ p.symbol }}</span>
+            <span class="text-muted" style="font-size:10px">{{ p.candle_count }}</span>
+          </label>
+          {% endfor %}
+        {% else %}
+          <div class="pair-item text-muted">No enriched pairs found</div>
+        {% endif %}
+      </div>
+      <div class="d-flex gap-1 mt-1">
+        <button class="btn btn-outline-secondary btn-sm py-0 px-2"
+                style="font-size:11px" onclick="selectAllPairs(true)">All</button>
+        <button class="btn btn-outline-secondary btn-sm py-0 px-2"
+                style="font-size:11px" onclick="selectAllPairs(false)">None</button>
+      </div>
+
+      <!-- Price Overlays -->
+      <div class="ctrl-label">Price Overlays</div>
+      {% for group_name, keys in overlay_groups.items() %}
+      <div class="ind-group">
+        <div class="ind-group-header" onclick="toggleGroup(this)">
+          <span>{{ group_name }}</span>
+          <i class="bi bi-chevron-down" style="font-size:10px;transition:transform 0.2s"></i>
+        </div>
+        <div class="ind-group-body {% if loop.first %}open{% endif %}">
+          {% for key in keys %}
+          {% set spec = price_overlays.get(key) %}
+          {% if spec %}
+          <label class="ind-item">
+            <input type="checkbox" class="overlay-check" value="{{ key }}"
+                   {% if key in default_overlays %}checked{% endif %}>
+            <span class="ind-swatch" style="background:{{ spec.color }};{% if spec.dash %}border:1px dashed {{ spec.color }};background:transparent;{% endif %}"></span>
+            <span>{{ spec.label }}</span>
+          </label>
+          {% endif %}
+          {% endfor %}
+        </div>
+      </div>
+      {% endfor %}
+
+      <!-- Sub-Pane Indicators -->
+      <div class="ctrl-label" style="margin-top:14px">Indicator Panes</div>
+      {% for group_name, keys in pane_groups.items() %}
+      <div class="ind-group">
+        <div class="ind-group-header" onclick="toggleGroup(this)">
+          <span>{{ group_name }}</span>
+          <i class="bi bi-chevron-down" style="font-size:10px;transition:transform 0.2s"></i>
+        </div>
+        <div class="ind-group-body {% if group_name in ['Volume','RSI','MACD'] %}open{% endif %}">
+          {% for key in keys %}
+          {% set spec = pane_indicators.get(key) %}
+          {% if spec %}
+          <label class="ind-item">
+            <input type="checkbox" class="pane-check" value="{{ key }}"
+                   {% if key in default_panes %}checked{% endif %}>
+            <span class="ind-swatch" style="background:{{ spec.color }}"></span>
+            <span>{{ spec.label }}</span>
+          </label>
+          {% endif %}
+          {% endfor %}
+        </div>
+      </div>
+      {% endfor %}
+
+      <!-- Layouts -->
+      <div class="ctrl-label" style="margin-top:14px">Saved Layouts</div>
+      <div id="layouts-list">
+        {% if layouts %}
+          {% for layout in layouts %}
+          <div class="layout-item" id="layout-{{ layout.id }}">
+            <span class="layout-name" onclick="loadLayout({{ layout.config | tojson }})">
+              {{ layout.name }}
+            </span>
+            <button class="layout-del" onclick="deleteLayout('{{ layout.id }}')"
+                    title="Delete layout">×</button>
+          </div>
+          {% endfor %}
+        {% else %}
+          <div class="text-muted" style="font-size:11px;padding:4px 0"
+               id="layouts-empty">No saved layouts yet</div>
+        {% endif %}
+      </div>
+      <div class="save-row">
+        <input type="text" id="layout-name" placeholder="Layout name…" maxlength="50">
+        <button onclick="saveLayout()"><i class="bi bi-floppy"></i> Save</button>
+      </div>
+
+    </div><!-- /panel-body -->
+
+    <div class="charts-panel-footer">
+      <div class="d-flex align-items-center gap-2 mb-2">
+        <span class="ctrl-label" style="margin:0">Columns</span>
+        <div class="cols-toggle" id="cols-toggle">
+          <button class="col-btn" onclick="setCols(1)" data-cols="1">1</button>
+          <button class="col-btn active" onclick="setCols(2)" data-cols="2">2</button>
+          <button class="col-btn" onclick="setCols(3)" data-cols="3">3</button>
+        </div>
+      </div>
+      <button class="btn-load" onclick="loadCharts()">
+        <i class="bi bi-bar-chart-line-fill me-1"></i> Load Charts
+      </button>
+    </div>
+  </div><!-- /charts-panel -->
+
+  <!-- ── Chart Area ──────────────────────────────────────────────────────── -->
+  <div class="charts-area" id="charts-area">
+    <div class="charts-empty" id="charts-empty">
+      <i class="bi bi-graph-up"></i>
+      <div>Select pairs and indicators, then click <strong>Load Charts</strong></div>
+    </div>
+    <div class="row g-2" id="charts-grid" style="display:none"></div>
+  </div>
+
+</div><!-- /charts-layout -->
+{% endblock %}
+
+{% block scripts %}
+<script>
+const SESSION_ID = "{{ session.id }}";
+let activeCols = 2;
+let chartIds = [];    // track rendered chart div IDs for crosshair sync
+let syncingZoom = false;
+
+// ── Timeframe selection ───────────────────────────────────────────────────────
+function selectTf(btn) {
+  document.querySelectorAll('.tf-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+}
+
+function getActiveTf() {
+  const btn = document.querySelector('.tf-btn.active');
+  return btn ? btn.dataset.tf : '1h';
+}
+
+// ── Pair list ─────────────────────────────────────────────────────────────────
+function filterPairs(q) {
+  q = q.toLowerCase();
+  document.querySelectorAll('#pair-list .pair-item').forEach(item => {
+    const sym = (item.dataset.symbol || '').toLowerCase();
+    item.style.display = sym.includes(q) ? '' : 'none';
+  });
+}
+
+function selectAllPairs(select) {
+  document.querySelectorAll('#pair-list .pair-check').forEach(cb => {
+    if (cb.closest('.pair-item').style.display !== 'none') {
+      cb.checked = select;
+    }
+  });
+  updatePairCount();
+}
+
+function updatePairCount() {
+  const n = document.querySelectorAll('.pair-check:checked').length;
+  document.getElementById('pair-count').textContent = `${n} selected`;
+}
+updatePairCount();
+
+// ── Indicator groups accordion ────────────────────────────────────────────────
+function toggleGroup(header) {
+  const body = header.nextElementSibling;
+  const icon = header.querySelector('i');
+  body.classList.toggle('open');
+  icon.style.transform = body.classList.contains('open') ? 'rotate(-180deg)' : '';
+}
+
+// ── Column count ──────────────────────────────────────────────────────────────
+function setCols(n) {
+  activeCols = n;
+  document.querySelectorAll('.col-btn').forEach(b => {
+    b.classList.toggle('active', parseInt(b.dataset.cols) === n);
+  });
+  // Re-layout existing cards
+  document.querySelectorAll('#charts-grid .chart-col').forEach(col => {
+    col.className = `chart-col col-12 col-md-${12 / n}`;
+  });
+  // Trigger Plotly resize on all charts
+  chartIds.forEach(id => {
+    const el = document.getElementById(id);
+    if (el) Plotly.Plots.resize(el);
+  });
+}
+
+// ── Load charts ───────────────────────────────────────────────────────────────
+async function loadCharts() {
+  const timeframe   = getActiveTf();
+  const candleLimit = parseInt(document.getElementById('candle-limit').value);
+  const pairs       = [...document.querySelectorAll('.pair-check:checked')].map(el => el.value);
+  const overlays    = [...document.querySelectorAll('.overlay-check:checked')].map(el => el.value);
+  const panes       = [...document.querySelectorAll('.pane-check:checked')].map(el => el.value);
+
+  if (!pairs.length) { showToast('Select at least one pair'); return; }
+
+  const grid  = document.getElementById('charts-grid');
+  const empty = document.getElementById('charts-empty');
+  empty.style.display = 'none';
+  grid.style.display  = '';
+  grid.innerHTML = '';
+  chartIds = [];
+
+  const colClass = `col-12 col-md-${12 / activeCols}`;
+
+  for (const symbol of pairs) {
+    const divId  = 'chart_' + symbol.replace(/[^A-Za-z0-9]/g, '_');
+    const col    = document.createElement('div');
+    col.className = `chart-col ${colClass}`;
+    col.innerHTML = `
+      <div class="chart-card">
+        <div class="chart-card-header">
+          <span><i class="bi bi-coin me-1 text-warning"></i>${symbol}</span>
+          <div class="d-flex align-items-center gap-2">
+            <span class="badge-tf">${timeframe}</span>
+            <button class="btn btn-sm btn-outline-secondary py-0 px-2"
+                    style="font-size:11px"
+                    onclick="exportChart('${divId}')">
+              <i class="bi bi-camera"></i>
+            </button>
+          </div>
+        </div>
+        <div class="chart-card-body">
+          <div class="chart-placeholder" id="ph_${divId}">
+            <div class="spinner-border spinner-border-sm text-secondary" role="status"></div>
+            <span>Loading ${symbol}…</span>
+          </div>
+          <div id="${divId}" style="display:none"></div>
+        </div>
+      </div>`;
+    grid.appendChild(col);
+
+    // Kick off async fetch (no await so all cards appear first)
+    fetchChart(symbol, timeframe, overlays, panes, candleLimit, divId);
+  }
+}
+
+async function fetchChart(symbol, timeframe, overlays, panes, candleLimit, divId) {
+  const ph = document.getElementById('ph_' + divId);
+  try {
+    const resp = await fetch(`/charts/${SESSION_ID}/chart`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ symbol, timeframe, overlays, panes, candle_limit: candleLimit })
+    });
+    const data = await resp.json();
+    if (data.error) {
+      ph.innerHTML = `<i class="bi bi-exclamation-triangle text-warning"></i><span class="text-warning" style="font-size:12px">${data.error}</span>`;
+      return;
+    }
+    const el = document.getElementById(divId);
+    if (!el) return;
+    const parsed = JSON.parse(data.chart);
+    el.style.display = '';
+    if (ph) ph.style.display = 'none';
+    Plotly.newPlot(divId, parsed.data, parsed.layout, {
+      responsive: true,
+      displayModeBar: true,
+      displaylogo: false,
+      modeBarButtonsToRemove: ['select2d','lasso2d','autoScale2d'],
+      scrollZoom: true,
+    });
+    chartIds.push(divId);
+    // Attach crosshair sync
+    el.on('plotly_relayout', (evData) => syncZoom(divId, evData));
+  } catch(e) {
+    if (ph) ph.innerHTML = `<i class="bi bi-exclamation-triangle text-danger"></i><span class="text-danger" style="font-size:12px">Error: ${e.message}</span>`;
+  }
+}
+
+// ── Cross-chart zoom sync ─────────────────────────────────────────────────────
+function syncZoom(sourceId, evData) {
+  if (syncingZoom) return;
+  const keys = Object.keys(evData);
+  // Only sync x-axis range changes (zoom / pan)
+  const xKeys = keys.filter(k => k.startsWith('xaxis') && k.endsWith(']'));
+  if (!xKeys.length) return;
+
+  // Build the update object from the source event
+  const update = {};
+  xKeys.forEach(k => { update[k] = evData[k]; });
+
+  syncingZoom = true;
+  chartIds.forEach(id => {
+    if (id === sourceId) return;
+    const el = document.getElementById(id);
+    if (el && el.layout) {
+      Plotly.relayout(id, update).catch(() => {});
+    }
+  });
+  syncingZoom = false;
+}
+
+// ── Screenshot export ─────────────────────────────────────────────────────────
+function exportChart(divId) {
+  Plotly.downloadImage(divId, { format: 'png', filename: divId, scale: 2 });
+}
+
+// ── Layouts ───────────────────────────────────────────────────────────────────
+function getCurrentConfig() {
+  return {
+    timeframe:    getActiveTf(),
+    candle_limit: parseInt(document.getElementById('candle-limit').value),
+    pairs:        [...document.querySelectorAll('.pair-check:checked')].map(el => el.value),
+    overlays:     [...document.querySelectorAll('.overlay-check:checked')].map(el => el.value),
+    panes:        [...document.querySelectorAll('.pane-check:checked')].map(el => el.value),
+    cols:         activeCols,
+  };
+}
+
+async function saveLayout() {
+  const name = document.getElementById('layout-name').value.trim();
+  if (!name) { showToast('Enter a layout name'); return; }
+  const config = getCurrentConfig();
+  const resp = await fetch(`/charts/${SESSION_ID}/layout/save`, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ name, config }),
+  });
+  const data = await resp.json();
+  if (data.error) { showToast(data.error); return; }
+  document.getElementById('layout-name').value = '';
+  // Add to the list in the UI
+  const empty = document.getElementById('layouts-empty');
+  if (empty) empty.remove();
+  const list = document.getElementById('layouts-list');
+  const item = document.createElement('div');
+  item.className = 'layout-item';
+  item.id = 'layout-' + data.id;
+  item.innerHTML = `
+    <span class="layout-name" onclick='loadLayout(${JSON.stringify(config)})'>${data.name}</span>
+    <button class="layout-del" onclick="deleteLayout('${data.id}')" title="Delete">×</button>`;
+  list.insertBefore(item, list.firstChild);
+  showToast('Layout saved: ' + data.name);
+}
+
+function loadLayout(config) {
+  // Apply timeframe
+  document.querySelectorAll('.tf-btn').forEach(b => {
+    b.classList.toggle('active', b.dataset.tf === config.timeframe);
+  });
+  // Apply candle limit
+  const sel = document.getElementById('candle-limit');
+  if (sel) sel.value = config.candle_limit || 500;
+  // Apply pairs
+  document.querySelectorAll('.pair-check').forEach(cb => {
+    cb.checked = (config.pairs || []).includes(cb.value);
+  });
+  updatePairCount();
+  // Apply overlays
+  document.querySelectorAll('.overlay-check').forEach(cb => {
+    cb.checked = (config.overlays || []).includes(cb.value);
+  });
+  // Apply panes
+  document.querySelectorAll('.pane-check').forEach(cb => {
+    cb.checked = (config.panes || []).includes(cb.value);
+  });
+  // Columns
+  if (config.cols) setCols(config.cols);
+  showToast('Layout loaded — click Load Charts to render');
+}
+
+async function deleteLayout(layoutId) {
+  const resp = await fetch(`/charts/${SESSION_ID}/layout/${layoutId}/delete`, { method: 'POST' });
+  if (resp.ok) {
+    const el = document.getElementById('layout-' + layoutId);
+    if (el) el.remove();
+    if (!document.querySelectorAll('.layout-item').length) {
+      const list = document.getElementById('layouts-list');
+      list.innerHTML = '<div class="text-muted" style="font-size:11px;padding:4px 0" id="layouts-empty">No saved layouts yet</div>';
+    }
+  }
+}
+
+// ── Window resize: relay Plotly ───────────────────────────────────────────────
+window.addEventListener('resize', () => {
+  chartIds.forEach(id => {
+    const el = document.getElementById(id);
+    if (el) Plotly.Plots.resize(el).catch(() => {});
+  });
+});
+</script>
+{% endblock %}
