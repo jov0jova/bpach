@@ -179,8 +179,9 @@ def win_rate_bar_chart(data: dict, title: str = "Win Rate by Condition") -> str:
         marker_color=colors, text=[f"{v:.1f}%" for v in values],
         textposition="outside"
     ))
-    fig.update_layout(**DARK_LAYOUT, title=title, height=max(300, len(labels) * 25 + 100),
-                      xaxis=dict(range=[0, 105], title="Win Rate (%)"))
+    fig.update_layout(**{**DARK_LAYOUT,
+                         "xaxis": {**DARK_LAYOUT["xaxis"], "range": [0, 105], "title": "Win Rate (%)"},
+                         "title": title, "height": max(300, len(labels) * 25 + 100)})
     return fig.to_json()
 
 
@@ -192,6 +193,8 @@ def pnl_distribution(pnl_values: list, title: str = "PnL Distribution") -> str:
         marker_line=dict(color="#21262d", width=0.5)
     ))
     fig.add_vline(x=0, line_color="#8b949e", line_dash="dash")
-    fig.update_layout(**DARK_LAYOUT, title=title, height=300,
-                      xaxis=dict(title="PnL %"), yaxis=dict(title="Count"))
+    fig.update_layout(**{**DARK_LAYOUT,
+                         "xaxis": {**DARK_LAYOUT["xaxis"], "title": "PnL %"},
+                         "yaxis": {**DARK_LAYOUT["yaxis"], "title": "Count"},
+                         "title": title, "height": 300})
     return fig.to_json()
