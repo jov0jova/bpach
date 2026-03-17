@@ -411,7 +411,7 @@
           <span>{{ group_name }}</span>
           <i class="bi bi-chevron-down" style="font-size:10px;transition:transform 0.2s"></i>
         </div>
-        <div class="ind-group-body {% if group_name in ['Volume','RSI','MACD'] %}open{% endif %}">
+        <div class="ind-group-body {% if group_name in ['Volume & Money Flow','RSI','MACD'] %}open{% endif %}">
           {% for key in keys %}
           {% set spec = pane_indicators.get(key) %}
           {% if spec %}
@@ -419,6 +419,41 @@
             <input type="checkbox" class="pane-check" value="{{ key }}"
                    {% if key in default_panes %}checked{% endif %}>
             <span class="ind-swatch" style="background:{{ spec.color }}"></span>
+            <span>{{ spec.label }}</span>
+          </label>
+          {% endif %}
+          {% endfor %}
+        </div>
+      </div>
+      {% endfor %}
+
+      <!-- Candle Patterns -->
+      <div class="ctrl-label" style="margin-top:14px">
+        Candle Patterns
+        <span style="font-size:9px;margin-left:4px;font-weight:400;text-transform:none;color:#484f58">
+          ▲ bull &nbsp; ▼ bear &nbsp; ◯ neutral
+        </span>
+      </div>
+      {% for group_name, keys in candle_pattern_groups.items() %}
+      <div class="ind-group">
+        <div class="ind-group-header" onclick="toggleGroup(this)">
+          <span>{{ group_name }}</span>
+          <i class="bi bi-chevron-down" style="font-size:10px;transition:transform 0.2s"></i>
+        </div>
+        <div class="ind-group-body">
+          {% for key in keys %}
+          {% set spec = candle_patterns.get(key) %}
+          {% if spec %}
+          <label class="ind-item">
+            <input type="checkbox" class="pattern-check" value="{{ key }}"
+                   {% if key in default_patterns %}checked{% endif %}>
+            {% if spec.type == 'bull' %}
+              <span style="color:#3fb950;font-size:10px;width:10px;text-align:center">▲</span>
+            {% elif spec.type == 'bear' %}
+              <span style="color:#f85149;font-size:10px;width:10px;text-align:center">▼</span>
+            {% else %}
+              <span style="color:#f0e68c;font-size:10px;width:10px;text-align:center">◯</span>
+            {% endif %}
             <span>{{ spec.label }}</span>
           </label>
           {% endif %}
@@ -553,6 +588,7 @@ async function loadCharts() {
   const pairs       = [...document.querySelectorAll('.pair-check:checked')].map(el => el.value);
   const overlays    = [...document.querySelectorAll('.overlay-check:checked')].map(el => el.value);
   const panes       = [...document.querySelectorAll('.pane-check:checked')].map(el => el.value);
+  const patterns    = [...document.querySelectorAll('.pattern-check:checked')].map(el => el.value);
 
   if (!pairs.length) { showToast('Select at least one pair'); return; }
 
@@ -593,17 +629,17 @@ async function loadCharts() {
     grid.appendChild(col);
 
     // Kick off async fetch (no await so all cards appear first)
-    fetchChart(symbol, timeframe, overlays, panes, candleLimit, divId);
+    fetchChart(symbol, timeframe, overlays, panes, patterns, candleLimit, divId);
   }
 }
 
-async function fetchChart(symbol, timeframe, overlays, panes, candleLimit, divId) {
+async function fetchChart(symbol, timeframe, overlays, panes, patterns, candleLimit, divId) {
   const ph = document.getElementById('ph_' + divId);
   try {
     const resp = await fetch(`/charts/${SESSION_ID}/chart`, {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ symbol, timeframe, overlays, panes, candle_limit: candleLimit })
+      body: JSON.stringify({ symbol, timeframe, overlays, panes, patterns, candle_limit: candleLimit })
     });
     const data = await resp.json();
     if (data.error) {
@@ -666,6 +702,7 @@ function getCurrentConfig() {
     pairs:        [...document.querySelectorAll('.pair-check:checked')].map(el => el.value),
     overlays:     [...document.querySelectorAll('.overlay-check:checked')].map(el => el.value),
     panes:        [...document.querySelectorAll('.pane-check:checked')].map(el => el.value),
+    patterns:     [...document.querySelectorAll('.pattern-check:checked')].map(el => el.value),
     cols:         activeCols,
   };
 }
@@ -716,6 +753,10 @@ function loadLayout(config) {
   // Apply panes
   document.querySelectorAll('.pane-check').forEach(cb => {
     cb.checked = (config.panes || []).includes(cb.value);
+  });
+  // Apply patterns
+  document.querySelectorAll('.pattern-check').forEach(cb => {
+    cb.checked = (config.patterns || []).includes(cb.value);
   });
   // Columns
   if (config.cols) setCols(config.cols);
