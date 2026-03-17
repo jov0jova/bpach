@@ -127,13 +127,6 @@ INDICATOR_CATALOG = OrderedDict([
     ("BB_pct_20",   {"type": "band_pct", "range": (0.1, 0.4), "label": "BB %B(20) near lower", "cat": "Bands", "default": True}),
     ("BB_width_20", {"type": "gt", "range": (0.005, 0.05), "label": "BB Width(20) > min",       "cat": "Bands"}),
 
-    # ── Crossover signals ─────────────────────────────────────────────────
-    # type "flag": col == 1  (fires only on the bar where the cross occurs)
-    ("ema_20_50_cross",  {"type": "flag", "label": "EMA 20/50 bullish cross",  "cat": "Trend"}),
-    ("ema_50_200_cross", {"type": "flag", "label": "EMA 50/200 bullish cross", "cat": "Trend"}),
-    ("MACD_cross",       {"type": "flag", "label": "MACD bullish cross",       "cat": "Momentum"}),
-    ("RSI_14_cross_30",  {"type": "flag", "label": "RSI(14) crosses above 30", "cat": "Oscillators"}),
-
     # ── Volatility ────────────────────────────────────────────────────────
     # type "lt": col < threshold  (avoid high-volatility entries)
     ("NATR_14",     {"type": "lt", "range": (0.5, 4.0), "label": "NATR(14) < max %", "cat": "Volatility"}),
@@ -145,12 +138,76 @@ INDICATOR_CATALOG = OrderedDict([
 DEFAULT_INDICATORS = [k for k, v in INDICATOR_CATALOG.items() if v.get("default")]
 
 
+# ── Cross condition catalogue ─────────────────────────────────────────────────
+# Keys start with "X_" so they're distinguishable from regular indicator columns.
+# These are NEVER stored in the DataFrame — they're computed at runtime via shift().
+#
+# spec fields:
+#   type      : "cross_above" | "cross_below"
+#   col_a     : LTF column that does the crossing
+#   col_b     : (option 1) LTF column being crossed
+#   col_b_htf : (option 2) suffix to find the matching HTF_ column  e.g. "EMA_200"
+#   col_b_val : (option 3) scalar level                             e.g. 30 for RSI
+#
+# All cross conditions fire on exactly ONE bar (the bar where the cross occurs).
+
+CROSS_CATALOG: OrderedDict = OrderedDict([
+    # ── EMA pair crosses (same TF) ────────────────────────────────────────
+    ("X_ema8_x_ema20",    {"type": "cross_above", "col_a": "EMA_8",   "col_b": "EMA_20",
+                           "label": "EMA8 ↑ crosses EMA20",   "cat": "Crosses"}),
+    ("X_ema20_x_ema50",   {"type": "cross_above", "col_a": "EMA_20",  "col_b": "EMA_50",
+                           "label": "EMA20 ↑ crosses EMA50",  "cat": "Crosses"}),
+    ("X_ema50_x_ema200",  {"type": "cross_above", "col_a": "EMA_50",  "col_b": "EMA_200",
+                           "label": "EMA50 ↑ crosses EMA200", "cat": "Crosses"}),
+
+    # ── Price crosses a level / band (same TF) ────────────────────────────
+    ("X_close_x_ema200",     {"type": "cross_above", "col_a": "close", "col_b": "EMA_200",
+                              "label": "Price ↑ crosses EMA200",      "cat": "Crosses"}),
+    ("X_close_x_kc_lower",   {"type": "cross_above", "col_a": "close", "col_b": "KC_lower",
+                              "label": "Price ↑ crosses Keltner Lower","cat": "Crosses"}),
+    ("X_close_x_bb_lower",   {"type": "cross_above", "col_a": "close", "col_b": "BB_lower_20",
+                              "label": "Price ↑ crosses BB Lower(20)", "cat": "Crosses"}),
+
+    # ── Oscillator level crosses ──────────────────────────────────────────
+    ("X_rsi14_x_30",     {"type": "cross_above", "col_a": "RSI_14",   "col_b_val": 30,
+                          "label": "RSI14 ↑ crosses 30 (oversold exit)", "cat": "Crosses"}),
+    ("X_rsi14_x_50",     {"type": "cross_above", "col_a": "RSI_14",   "col_b_val": 50,
+                          "label": "RSI14 ↑ crosses 50 (momentum)",      "cat": "Crosses"}),
+    ("X_stochk_x_20",    {"type": "cross_above", "col_a": "STOCH_K",  "col_b_val": 20,
+                          "label": "Stoch %K ↑ crosses 20",              "cat": "Crosses"}),
+    ("X_stochrsi_x_20",  {"type": "cross_above", "col_a": "STOCHRSI_K", "col_b_val": 20,
+                          "label": "StochRSI ↑ crosses 20",              "cat": "Crosses"}),
+    ("X_cci_x_m100",     {"type": "cross_above", "col_a": "CCI_20",   "col_b_val": -100,
+                          "label": "CCI ↑ crosses -100 (oversold exit)", "cat": "Crosses"}),
+    ("X_willr_x_m50",    {"type": "cross_above", "col_a": "WILLR_14", "col_b_val": -50,
+                          "label": "Williams %R ↑ crosses -50",          "cat": "Crosses"}),
+
+    # ── Momentum indicator crosses ─────────────────────────────────────────
+    ("X_macd_x_signal",  {"type": "cross_above", "col_a": "MACD",      "col_b": "MACD_signal",
+                          "label": "MACD ↑ crosses Signal line",         "cat": "Crosses"}),
+    ("X_macd_hist_x_0",  {"type": "cross_above", "col_a": "MACD_hist", "col_b_val": 0,
+                          "label": "MACD Histogram ↑ crosses zero",      "cat": "Crosses"}),
+
+    # ── HTF crosses (LTF price / indicator vs HTF level) ──────────────────
+    ("X_close_x_htf_ema50",   {"type": "cross_above", "col_a": "close", "col_b_htf": "EMA_50",
+                               "label": "Price ↑ crosses HTF EMA50",         "cat": "Crosses/HTF"}),
+    ("X_close_x_htf_ema200",  {"type": "cross_above", "col_a": "close", "col_b_htf": "EMA_200",
+                               "label": "Price ↑ crosses HTF EMA200",        "cat": "Crosses/HTF"}),
+    ("X_close_x_htf_kc_lower",{"type": "cross_above", "col_a": "close", "col_b_htf": "KC_lower",
+                               "label": "Price ↑ crosses HTF Keltner Lower", "cat": "Crosses/HTF"}),
+    ("X_close_x_htf_bb_lower",{"type": "cross_above", "col_a": "close", "col_b_htf": "BB_lower_20",
+                               "label": "Price ↑ crosses HTF BB Lower",      "cat": "Crosses/HTF"}),
+    ("X_ema20_x_htf_ema50",   {"type": "cross_above", "col_a": "EMA_20", "col_b_htf": "EMA_50",
+                               "label": "LTF EMA20 ↑ crosses HTF EMA50",     "cat": "Crosses/HTF"}),
+])
+
+
 # ── Auto-classification ───────────────────────────────────────────────────────
 
 # Columns that are raw OHLCV, intermediate, or not meaningful standalone
 _SKIP_COLS: frozenset = frozenset({
     "open", "high", "low", "close", "volume", "timestamp", "date",
-    "entry_signal", "exit_signal",
+    "entry_signal", "exit_signal", "ema_20_50_cross", "ema_50_200_cross",
     "ema_aligned_bull", "MACD", "MACD_signal", "STOCH_D", "STOCHRSI_D",
     "PSAR_up", "PSAR_down",
     "BB_upper_14", "BB_mid_14", "BB_upper_20", "BB_mid_20",
@@ -433,6 +490,9 @@ def _build_full_catalog() -> OrderedDict:
             spec = _auto_classify(col)
             if spec is not None:
                 catalog[col] = spec
+    # Cross conditions are computed at runtime — not stored in parquet — so we
+    # always merge them in regardless of what columns exist in the data files.
+    catalog.update(CROSS_CATALOG)
     return catalog
 
 
@@ -469,6 +529,9 @@ def build_dynamic_catalog(parquet_dir: Path, session_id: str,
             spec = _auto_classify(col)
             if spec is not None:
                 catalog[col] = spec
+    # Cross conditions are computed at runtime — not stored in parquet — so
+    # always merge them in after scanning the actual file columns.
+    catalog.update(CROSS_CATALOG)
 
     return catalog if catalog else FULL_INDICATOR_CATALOG
 
@@ -480,6 +543,51 @@ def _ma_period(col: str) -> int:
         return int(col.split("_")[1])
     except (IndexError, ValueError):
         return 0
+
+
+def _cross_cond(df: "pd.DataFrame", spec: dict) -> "pd.Series | None":
+    """
+    Compute a one-bar crossover condition with no lookahead.
+
+    Returns a boolean Series that is True only on the single bar where the
+    cross occurs.  Uses shift(1) for the previous bar — never peeks forward.
+
+    spec keys:
+      type      : "cross_above" | "cross_below"
+      col_a     : LTF column doing the crossing (must exist in df)
+      col_b     : (option 1) LTF column being crossed (must exist in df)
+      col_b_htf : (option 2) suffix to match an HTF_ column, e.g. "EMA_200"
+      col_b_val : (option 3) scalar level, e.g. 30 for RSI
+    """
+    col_a = spec.get("col_a", "")
+    if col_a not in df.columns:
+        return None
+    a     = df[col_a]
+    a_lag = a.shift(1)
+
+    if "col_b" in spec:
+        col_b = spec["col_b"]
+        if col_b not in df.columns:
+            return None
+        b     = df[col_b]
+        b_lag = b.shift(1)
+    elif "col_b_htf" in spec:
+        suffix  = spec["col_b_htf"]
+        matches = [c for c in df.columns if c.startswith("HTF_") and c.endswith(f"_{suffix}")]
+        if not matches:
+            return None
+        b     = df[matches[0]]
+        b_lag = b.shift(1)
+    elif "col_b_val" in spec:
+        b     = spec["col_b_val"]   # scalar — shift of constant == constant
+        b_lag = spec["col_b_val"]
+    else:
+        return None
+
+    if spec["type"] == "cross_above":
+        return (a_lag <= b_lag) & (a > b)
+    else:  # cross_below
+        return (a_lag >= b_lag) & (a < b)
 
 
 # ── Strategy class ────────────────────────────────────────────────────────────
@@ -513,10 +621,21 @@ class CatalogStrategy(BaseStrategy):
             if not p.get(f"use_{col}", 0):
                 continue
             spec = FULL_INDICATOR_CATALOG.get(col)
-            if spec is None or col not in df.columns:
+            if spec is None:
                 continue
 
             kind = spec["type"]
+
+            # ── Dynamic crossover conditions (no precomputed column needed) ──
+            if kind in ("cross_above", "cross_below"):
+                cross = _cross_cond(df, spec)
+                if cross is not None:
+                    cond &= cross
+                continue
+
+            # Regular conditions require the column to exist in df
+            if col not in df.columns:
+                continue
 
             if kind == "osc" or kind == "band_pct" or kind == "lt":
                 cond &= df[col] < p[f"thresh_{col}"]
@@ -1243,6 +1362,8 @@ def _describe_rules(params: dict, selected: list) -> str:
         elif kind == "band_lower":
             lines.append(f"  • close < {col}  (oversold below lower band)")
             active_bands.append(col)
+        elif kind in ("cross_above", "cross_below"):
+            lines.append(f"  • {spec['label']}  [crossover — 1 bar]")
 
     # Derived cross-conditions
     active_mas.sort()
