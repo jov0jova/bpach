@@ -127,6 +127,13 @@ INDICATOR_CATALOG = OrderedDict([
     ("BB_pct_20",   {"type": "band_pct", "range": (0.1, 0.4), "label": "BB %B(20) near lower", "cat": "Bands", "default": True}),
     ("BB_width_20", {"type": "gt", "range": (0.005, 0.05), "label": "BB Width(20) > min",       "cat": "Bands"}),
 
+    # ── Crossover signals ─────────────────────────────────────────────────
+    # type "flag": col == 1  (fires only on the bar where the cross occurs)
+    ("ema_20_50_cross",  {"type": "flag", "label": "EMA 20/50 bullish cross",  "cat": "Trend"}),
+    ("ema_50_200_cross", {"type": "flag", "label": "EMA 50/200 bullish cross", "cat": "Trend"}),
+    ("MACD_cross",       {"type": "flag", "label": "MACD bullish cross",       "cat": "Momentum"}),
+    ("RSI_14_cross_30",  {"type": "flag", "label": "RSI(14) crosses above 30", "cat": "Oscillators"}),
+
     # ── Volatility ────────────────────────────────────────────────────────
     # type "lt": col < threshold  (avoid high-volatility entries)
     ("NATR_14",     {"type": "lt", "range": (0.5, 4.0), "label": "NATR(14) < max %", "cat": "Volatility"}),
@@ -143,7 +150,7 @@ DEFAULT_INDICATORS = [k for k, v in INDICATOR_CATALOG.items() if v.get("default"
 # Columns that are raw OHLCV, intermediate, or not meaningful standalone
 _SKIP_COLS: frozenset = frozenset({
     "open", "high", "low", "close", "volume", "timestamp", "date",
-    "entry_signal", "exit_signal", "ema_20_50_cross", "ema_50_200_cross",
+    "entry_signal", "exit_signal",
     "ema_aligned_bull", "MACD", "MACD_signal", "STOCH_D", "STOCHRSI_D",
     "PSAR_up", "PSAR_down",
     "BB_upper_14", "BB_mid_14", "BB_upper_20", "BB_mid_20",
@@ -566,6 +573,10 @@ class CatalogStrategy(BaseStrategy):
         if p.get("use_htf_adx_filter", 0) and htf_adx_cols:
             cond &= df[htf_adx_cols[0]] > p.get("htf_adx_min", 20)
 
+        htf_ema200_cols = [c for c in df.columns if "HTF_" in c and c.endswith("_EMA_200")]
+        if p.get("use_htf_ema200", 0) and htf_ema200_cols:
+            cond &= df["close"] > df[htf_ema200_cols[0]]
+
         df["entry_signal"] = cond.astype(int)
         return df
 
@@ -767,6 +778,7 @@ def _objective(trial, dfs: list, config: dict,
         params["htf_rsi_max"]        = trial.suggest_float("htf_rsi_max", 30, 70)
         params["use_htf_adx_filter"] = trial.suggest_categorical("use_htf_adx_filter", [0, 1])
         params["htf_adx_min"]        = trial.suggest_float("htf_adx_min", 15, 40)
+        params["use_htf_ema200"]     = trial.suggest_categorical("use_htf_ema200", [0, 1])
 
     strategy = CatalogStrategy(params, selected)
     all_wfo  = []
@@ -821,6 +833,7 @@ def _objective_multi(trial, dfs: list, config: dict,
         params["htf_rsi_max"]        = trial.suggest_float("htf_rsi_max", 30, 70)
         params["use_htf_adx_filter"] = trial.suggest_categorical("use_htf_adx_filter", [0, 1])
         params["htf_adx_min"]        = trial.suggest_float("htf_adx_min", 15, 40)
+        params["use_htf_ema200"]     = trial.suggest_categorical("use_htf_ema200", [0, 1])
 
     strategy = CatalogStrategy(params, selected)
     all_wfo  = []
@@ -1249,6 +1262,8 @@ def _describe_rules(params: dict, selected: list) -> str:
         lines.append(f"  • [HTF] RSI < {params.get('htf_rsi_max', 60):.1f} on higher TF")
     if params.get("use_htf_adx_filter"):
         lines.append(f"  • [HTF] ADX > {params.get('htf_adx_min', 20):.1f} on higher TF")
+    if params.get("use_htf_ema200"):
+        lines.append("  • [HTF] Price > EMA(200) on higher TF")
 
     lines += [
         "",

@@ -292,6 +292,11 @@ class BaseStrategy:
                 (df["EMA_50"] > df["EMA_200"]).astype(int) -
                 (df["EMA_50"].shift(1) > df["EMA_200"].shift(1)).astype(int)
             )
+            # RSI recovery: +1 when RSI crosses above 30 (exits oversold), 0 otherwise
+            if "RSI_14" in df.columns:
+                df["RSI_14_cross_30"] = (
+                    ((df["RSI_14"] > 30) & (df["RSI_14"].shift(1) <= 30))
+                ).astype(int)
             # EMA alignment: all 3 EMAs aligned bullish
             df["ema_aligned_bull"] = (
                 (df["EMA_20"] > df["EMA_50"]) & (df["EMA_50"] > df["EMA_200"])
