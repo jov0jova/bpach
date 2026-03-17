@@ -303,40 +303,46 @@
         <span><i class="bi bi-trophy-fill me-2 text-warning"></i>Top Strategies</span>
         <span class="badge bg-secondary">{{ results|length }} found · {{ n_sig }} significant</span>
       </div>
+      <div class="card-body p-2 pb-1">
+        <input type="text" id="strat-filter" class="form-control form-control-sm caf-input mb-2"
+               placeholder="Filter by name or regime…" oninput="filterStrategies(this.value)">
+      </div>
       <div class="card-body p-0">
-        <div class="table-responsive">
-          <table class="table caf-table table-sm mb-0">
-            <thead>
+        <div class="table-responsive" style="max-height:520px;overflow-y:auto">
+          <table class="table caf-table table-sm mb-0" id="strat-table">
+            <thead class="sticky-top" style="top:0;z-index:2">
               <tr>
-                <th>#</th>
-                <th>Name</th>
-                <th class="text-end">Sig?</th>
-                <th class="text-end">p-val</th>
-                <th class="text-end">adj-p</th>
-                <th class="text-end">OOS Ret</th>
-                <th class="text-end">IS Ret</th>
-                <th class="text-end">WR</th>
-                <th class="text-end">PF</th>
-                <th class="text-end">Sharpe</th>
-                <th class="text-end">Sortino</th>
-                <th class="text-end">Calmar</th>
-                <th class="text-end">Max DD</th>
-                <th class="text-end">Expect.</th>
-                <th class="text-end">Pairs</th>
-                <th class="text-end">Regime</th>
+                <th class="sort-col" data-col="0" data-type="num" style="cursor:pointer;white-space:nowrap"># <span class="sort-icon text-muted" style="font-size:10px"></span></th>
+                <th class="sort-col" data-col="1" data-type="str" style="cursor:pointer;white-space:nowrap">Name <span class="sort-icon text-muted" style="font-size:10px"></span></th>
+                <th class="sort-col text-end" data-col="2" data-type="num" style="cursor:pointer;white-space:nowrap">Sig? <span class="sort-icon text-muted" style="font-size:10px"></span></th>
+                <th class="sort-col text-end" data-col="3" data-type="num" style="cursor:pointer;white-space:nowrap">p-val <span class="sort-icon text-muted" style="font-size:10px"></span></th>
+                <th class="sort-col text-end" data-col="4" data-type="num" style="cursor:pointer;white-space:nowrap">adj-p <span class="sort-icon text-muted" style="font-size:10px"></span></th>
+                <th class="sort-col text-end" data-col="5" data-type="num" style="cursor:pointer;white-space:nowrap">OOS Ret <span class="sort-icon text-muted" style="font-size:10px"></span></th>
+                <th class="sort-col text-end" data-col="6" data-type="num" style="cursor:pointer;white-space:nowrap">IS Ret <span class="sort-icon text-muted" style="font-size:10px"></span></th>
+                <th class="sort-col text-end" data-col="7" data-type="num" style="cursor:pointer;white-space:nowrap">WR <span class="sort-icon text-muted" style="font-size:10px"></span></th>
+                <th class="sort-col text-end" data-col="8" data-type="num" style="cursor:pointer;white-space:nowrap">PF <span class="sort-icon text-muted" style="font-size:10px"></span></th>
+                <th class="sort-col text-end" data-col="9" data-type="num" style="cursor:pointer;white-space:nowrap">Sharpe <span class="sort-icon text-muted" style="font-size:10px"></span></th>
+                <th class="sort-col text-end" data-col="10" data-type="num" style="cursor:pointer;white-space:nowrap">Sortino <span class="sort-icon text-muted" style="font-size:10px"></span></th>
+                <th class="sort-col text-end" data-col="11" data-type="num" style="cursor:pointer;white-space:nowrap">Calmar <span class="sort-icon text-muted" style="font-size:10px"></span></th>
+                <th class="sort-col text-end" data-col="12" data-type="num" style="cursor:pointer;white-space:nowrap">Max DD <span class="sort-icon text-muted" style="font-size:10px"></span></th>
+                <th class="sort-col text-end" data-col="13" data-type="num" style="cursor:pointer;white-space:nowrap">Expect. <span class="sort-icon text-muted" style="font-size:10px"></span></th>
+                <th class="sort-col text-end" data-col="14" data-type="num" style="cursor:pointer;white-space:nowrap">Pairs <span class="sort-icon text-muted" style="font-size:10px"></span></th>
+                <th class="sort-col text-end" data-col="15" data-type="str" style="cursor:pointer;white-space:nowrap">Regime <span class="sort-icon text-muted" style="font-size:10px"></span></th>
                 <th></th>
               </tr>
             </thead>
-            <tbody>
+            <tbody id="strat-tbody">
               {% for r in results %}
-              <tr class="{{ 'table-success-subtle' if r.is_significant else '' }}">
-                <td>
+              <tr class="strat-row {{ 'table-success-subtle' if r.is_significant else '' }}"
+                  data-name="{{ r.strategy_name | lower }}"
+                  data-regime="{{ (r.regime or '') | lower }}">
+                <td data-val="{{ r.rank }}">
                   {% if r.rank == 1 %}<span class="text-warning">⭐</span>{% endif %}
                   {{ r.rank }}
                 </td>
-                <td><small class="text-info">{{ r.strategy_name }}</small></td>
-                <!-- Significance -->
-                <td class="text-end">
+                <td data-val="{{ r.strategy_name }}"><small class="text-info">{{ r.strategy_name }}</small></td>
+                <!-- Significance: sort value = 1 sig, 0.5 marginal, 0 not -->
+                <td class="text-end" data-val="{{ 1 if r.is_significant else (0.5 if r.p_value < 0.1 else 0) }}">
                   {% if r.is_significant %}
                     <span class="badge bg-success" title="Statistically significant at FDR α=0.05">✓ sig</span>
                   {% elif r.p_value < 0.1 %}
@@ -345,31 +351,31 @@
                     <span class="badge bg-danger" title="Not significant">✗</span>
                   {% endif %}
                 </td>
-                <td class="text-end text-muted"><small>{{ '%.3f'|format(r.p_value) if r.p_value else '—' }}</small></td>
-                <td class="text-end text-muted"><small>{{ '%.3f'|format(r.adjusted_p) if r.adjusted_p else '—' }}</small></td>
-                <td class="text-end {{ 'text-success fw-bold' if r.oos_return > 0 else 'text-danger' }}">
-                  {{ '%+.1f%%'|format(r.oos_return) }}</td>
-                <td class="text-end {{ 'text-success' if r.is_return > 0 else 'text-danger' }}">
-                  {{ '%+.1f%%'|format(r.is_return) }}</td>
-                <td class="text-end">{{ '%.1f%%'|format(r.win_rate * 100) }}</td>
-                <td class="text-end {{ 'text-success' if r.profit_factor > 1.5 else '' }}">
-                  {{ '%.2f'|format(r.profit_factor) }}</td>
-                <td class="text-end {{ 'text-success' if r.sharpe > 1 else 'text-muted' }}">
-                  {{ '%.2f'|format(r.sharpe) }}</td>
-                <td class="text-end {{ 'text-success' if r.sortino_ratio and r.sortino_ratio > 1 else 'text-muted' }}">
-                  {{ '%.2f'|format(r.sortino_ratio) if r.sortino_ratio else '—' }}</td>
-                <td class="text-end text-muted">
+                <td class="text-end text-muted" data-val="{{ r.p_value if r.p_value else 9999 }}"><small>{{ '%.3f'|format(r.p_value) if r.p_value else '—' }}</small></td>
+                <td class="text-end text-muted" data-val="{{ r.adjusted_p if r.adjusted_p else 9999 }}"><small>{{ '%.3f'|format(r.adjusted_p) if r.adjusted_p else '—' }}</small></td>
+                <td class="text-end {{ 'text-success fw-bold' if r.oos_return > 0 else 'text-danger' }}"
+                    data-val="{{ r.oos_return }}">{{ '%+.1f%%'|format(r.oos_return) }}</td>
+                <td class="text-end {{ 'text-success' if r.is_return > 0 else 'text-danger' }}"
+                    data-val="{{ r.is_return }}">{{ '%+.1f%%'|format(r.is_return) }}</td>
+                <td class="text-end" data-val="{{ r.win_rate }}">{{ '%.1f%%'|format(r.win_rate * 100) }}</td>
+                <td class="text-end {{ 'text-success' if r.profit_factor > 1.5 else '' }}"
+                    data-val="{{ r.profit_factor }}">{{ '%.2f'|format(r.profit_factor) }}</td>
+                <td class="text-end {{ 'text-success' if r.sharpe > 1 else 'text-muted' }}"
+                    data-val="{{ r.sharpe }}">{{ '%.2f'|format(r.sharpe) }}</td>
+                <td class="text-end {{ 'text-success' if r.sortino_ratio and r.sortino_ratio > 1 else 'text-muted' }}"
+                    data-val="{{ r.sortino_ratio if r.sortino_ratio else -9999 }}">{{ '%.2f'|format(r.sortino_ratio) if r.sortino_ratio else '—' }}</td>
+                <td class="text-end text-muted" data-val="{{ r.calmar_ratio if r.calmar_ratio else -9999 }}">
                   {{ '%.2f'|format(r.calmar_ratio) if r.calmar_ratio else '—' }}</td>
-                <td class="text-end text-danger">
+                <td class="text-end text-danger" data-val="{{ r.max_drawdown if r.max_drawdown else 0 }}">
                   {{ '-%.1f%%'|format(r.max_drawdown) if r.max_drawdown else '—' }}</td>
-                <td class="text-end {{ 'text-success' if r.expectancy and r.expectancy > 0 else 'text-muted' }}">
-                  {{ '%.4f'|format(r.expectancy) if r.expectancy else '—' }}</td>
-                <td class="text-end">
+                <td class="text-end {{ 'text-success' if r.expectancy and r.expectancy > 0 else 'text-muted' }}"
+                    data-val="{{ r.expectancy if r.expectancy else -9999 }}">{{ '%.4f'|format(r.expectancy) if r.expectancy else '—' }}</td>
+                <td class="text-end" data-val="{{ r.pair_coverage if r.pair_coverage else 0 }}">
                   <span class="badge {{ 'bg-success' if r.pair_coverage >= 0.5 else 'bg-secondary' }}">
                     {{ '%.0f%%'|format(r.pair_coverage * 100) if r.pair_coverage else '—' }}
                   </span>
                 </td>
-                <td class="text-end">
+                <td class="text-end" data-val="{{ r.regime if r.regime else '' }}">
                   <span class="badge bg-dark border small" style="font-size:10px">
                     {{ r.regime if r.regime else '—' }}
                   </span>
@@ -394,6 +400,9 @@
               {% endfor %}
             </tbody>
           </table>
+        </div>
+        <div class="px-2 py-1 text-muted" style="font-size:11px" id="strat-count-label">
+          Showing {{ results|length }} strategies
         </div>
       </div>
     </div>
@@ -436,5 +445,99 @@ document.querySelectorAll('input[name="template"]').forEach(radio => {
     });
   });
 });
+
+// ── Table sorting ────────────────────────────────────────────────────────────
+(function() {
+  const table = document.getElementById('strat-table');
+  if (!table) return;
+
+  let sortCol = -1, sortAsc = true;
+
+  table.querySelectorAll('th.sort-col').forEach(th => {
+    th.addEventListener('click', function() {
+      const col = parseInt(this.dataset.col);
+      if (sortCol === col) {
+        sortAsc = !sortAsc;
+      } else {
+        sortCol = col;
+        sortAsc = false; // default: best (highest) first
+      }
+      // Update icons
+      table.querySelectorAll('th.sort-col').forEach(h => {
+        h.querySelector('.sort-icon').textContent = '';
+      });
+      this.querySelector('.sort-icon').textContent = sortAsc ? '▲' : '▼';
+      sortTable(col, this.dataset.type, sortAsc);
+    });
+  });
+
+  function sortTable(col, type, asc) {
+    const tbody = document.getElementById('strat-tbody');
+    // Collect pairs: [stratRow, rulesRow]
+    const rows = Array.from(tbody.querySelectorAll('tr.strat-row'));
+    const pairs = rows.map(r => {
+      const nextRow = r.nextElementSibling;
+      return [r, (nextRow && nextRow.classList.contains('rules-row')) ? nextRow : null];
+    });
+
+    pairs.sort(([a], [b]) => {
+      const aCell = a.cells[col];
+      const bCell = b.cells[col];
+      if (!aCell || !bCell) return 0;
+      let av = aCell.dataset.val;
+      let bv = bCell.dataset.val;
+      if (type === 'num') {
+        av = parseFloat(av);
+        bv = parseFloat(bv);
+        if (isNaN(av)) av = asc ? Infinity : -Infinity;
+        if (isNaN(bv)) bv = asc ? Infinity : -Infinity;
+        return asc ? av - bv : bv - av;
+      } else {
+        av = (av || '').toLowerCase();
+        bv = (bv || '').toLowerCase();
+        if (av < bv) return asc ? -1 : 1;
+        if (av > bv) return asc ? 1 : -1;
+        return 0;
+      }
+    });
+
+    pairs.forEach(([stratRow, rulesRow]) => {
+      tbody.appendChild(stratRow);
+      if (rulesRow) tbody.appendChild(rulesRow);
+    });
+
+    updateCount();
+  }
+})();
+
+// ── Filter ───────────────────────────────────────────────────────────────────
+function filterStrategies(query) {
+  const q = query.toLowerCase().trim();
+  const tbody = document.getElementById('strat-tbody');
+  if (!tbody) return;
+  let visible = 0;
+  tbody.querySelectorAll('tr.strat-row').forEach(row => {
+    const name = row.dataset.name || '';
+    const regime = row.dataset.regime || '';
+    const match = !q || name.includes(q) || regime.includes(q);
+    row.style.display = match ? '' : 'none';
+    const nextRow = row.nextElementSibling;
+    if (nextRow && nextRow.classList.contains('rules-row')) {
+      nextRow.style.display = match ? nextRow.dataset.open === '1' ? '' : 'none' : 'none';
+    }
+    if (match) visible++;
+  });
+  updateCount(visible);
+}
+
+function updateCount(n) {
+  const label = document.getElementById('strat-count-label');
+  if (!label) return;
+  if (n === undefined) {
+    n = document.querySelectorAll('#strat-tbody tr.strat-row:not([style*="display: none"])').length;
+  }
+  const total = document.querySelectorAll('#strat-tbody tr.strat-row').length;
+  label.textContent = n === total ? `Showing all ${total} strategies` : `Showing ${n} of ${total} strategies`;
+}
 </script>
 {% endblock %}
