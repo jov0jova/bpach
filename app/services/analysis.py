@@ -34,7 +34,8 @@ SNAPSHOT_INDICATORS = [
 
 
 def run_analysis(task_id: str, db_path: Path, session_id: str,
-                 parquet_dir: Path, run_id: str, timeframes: list) -> None:
+                 parquet_dir: Path, run_id: str, timeframes: list,
+                 stop_event=None) -> None:
     """Background task: extract indicator snapshots for all winning trades."""
     def progress(p, total, msg):
         m.update_task(db_path, task_id, progress=p, total=total, message=msg)
