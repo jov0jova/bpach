@@ -250,12 +250,12 @@ def _simple_backtest(df: pd.DataFrame,
                 pnl     = (xp / entry_price - 1) * 100
                 trades.append({
                     "entry_idx": entry_idx, "exit_idx": i,
-                    "entry_price": entry_price, "exit_price": xp,
-                    "pnl_pct": pnl, "is_winner": pnl > 0,
+                    "entry_price": float(entry_price), "exit_price": float(xp),
+                    "pnl_pct": float(pnl), "is_winner": bool(pnl > 0),
                     "entry_time": str(ts[entry_idx]), "exit_time": str(ts[i]),
                     "duration_bars": i - entry_idx,
                     "exit_reason": exit_reason,
-                    "position_size": cur_pos,
+                    "position_size": float(cur_pos),
                 })
                 in_trade = False
                 # Update Kelly estimate every 10 trades
