@@ -548,6 +548,26 @@ def _ma_period(col: str) -> int:
         return 0
 
 
+def _reconstruct_params(trial_params: dict, selected: list,
+                        ic_scores: "dict | None" = None) -> dict:
+    """
+    Re-derive use_<col> boolean flags from the stored p_use_<col> probabilities.
+
+    Optuna only persists parameters that were passed to trial.suggest_*().
+    The use_<col> booleans are computed inside the objective and never suggested,
+    so they vanish after the trial.  This function rebuilds them from the stored
+    p_use_<col> values using the same threshold formula.
+    """
+    params = dict(trial_params)
+    for col in selected:
+        p_key = f"p_use_{col}"
+        if p_key in trial_params:
+            ic_val   = (ic_scores or {}).get(col, 0.0)
+            p_active = 0.3 + min(0.5, ic_val * 5.0)
+            params[f"use_{col}"] = int(trial_params[p_key] < p_active)
+    return params
+
+
 def _cross_cond(df: "pd.DataFrame", spec: dict) -> "pd.Series | None":
     """
     Compute a one-bar crossover condition with no lookahead.
@@ -848,26 +868,41 @@ def _detect_regime(df: "pd.DataFrame") -> str:
 def _score_wfo_results(all_wfo: list, min_oos_trades: int = 5) -> float:
     """
     Composite score:
-      Sharpe (main) + log(1+return)*0.1 + (PF-1)*0.2 + pair_coverage_bonus
+      Sharpe (main) + log(1+return)*0.1 + (capped_PF-1)*0.2 + pair_coverage_bonus
 
     Rewards strategies that generalize across pairs.
-    Returns -999 if insufficient trades.
+    Returns -999 if insufficient trades or no valid Sharpe (too few trades to
+    compute return variance — guards against single-trade PF explosions).
     """
     if not all_wfo:
         return -999.0
     avg_trades = float(np.mean([w["oos_trades"] for w in all_wfo]))
     if avg_trades < min_oos_trades:
         return -999.0
-    sharpes     = [w["oos_sharpe"]  for w in all_wfo]
-    returns     = [w["oos_return"]  for w in all_wfo]
-    pfs         = [w.get("oos_profit_factor", 1.0) for w in all_wfo]
-    pairs_pos   = sum(1 for r in returns if r > 0)
-    coverage    = pairs_pos / len(all_wfo)
-    cov_bonus   = 0.3 if coverage >= 0.5 else 0.0
+
+    sharpes = [w["oos_sharpe"] for w in all_wfo]
+    returns = [w["oos_return"] for w in all_wfo]
+    pfs     = [w.get("oos_profit_factor", 1.0) for w in all_wfo]
+
+    # Drop NaN sharpes (arise when std(returns) == 0, i.e. too few / identical trades).
+    # If no pair produced a valid Sharpe the result is meaningless — reject it.
+    valid_sharpes = [s for s in sharpes if s is not None and not np.isnan(s)]
+    if not valid_sharpes:
+        return -999.0
+
+    # Cap PF at 5 to prevent strategies with 0 losing OOS trades from
+    # dominating the score with PF values in the millions.
+    pf_capped = [min(p, 5.0) for p in pfs if p is not None and not np.isnan(p)]
+    pf_score  = (np.mean(pf_capped) - 1.0) * 0.2 if pf_capped else 0.0
+
+    pairs_pos = sum(1 for r in returns if r > 0)
+    coverage  = pairs_pos / len(all_wfo)
+    cov_bonus = 0.3 if coverage >= 0.5 else 0.0
+
     return float(
-        np.mean(sharpes)
+        np.mean(valid_sharpes)
         + np.log1p(max(0, np.mean(returns))) * 0.1
-        + (np.mean(pfs) - 1.0) * 0.2
+        + pf_score
         + cov_bonus
     )
 
@@ -956,6 +991,12 @@ def _objective(trial, dfs: list, config: dict,
         params["htf_adx_min"]        = trial.suggest_float("htf_adx_min", 15, 40)
         params["use_htf_ema200"]     = trial.suggest_categorical("use_htf_ema200", [0, 1])
 
+    # Require at least 1 active LTF condition — HTF-only strategies fire on every
+    # bar where the HTF context is satisfied and produce meaningless statistics.
+    n_ltf_active = sum(1 for col in selected if params.get(f"use_{col}", 0))
+    if n_ltf_active == 0:
+        return -999.0
+
     strategy = CatalogStrategy(params, selected)
     all_wfo  = []
     for df in dfs:
@@ -1012,6 +1053,10 @@ def _objective_multi(trial, dfs: list, config: dict,
         params["htf_adx_min"]        = trial.suggest_float("htf_adx_min", 15, 40)
         params["use_htf_ema200"]     = trial.suggest_categorical("use_htf_ema200", [0, 1])
 
+    n_ltf_active = sum(1 for col in selected if params.get(f"use_{col}", 0))
+    if n_ltf_active == 0:
+        return (-999.0, -999.0)
+
     strategy = CatalogStrategy(params, selected)
     all_wfo  = []
     for df in dfs:
@@ -1027,9 +1072,13 @@ def _objective_multi(trial, dfs: list, config: dict,
     avg_trades = float(np.mean([w["oos_trades"] for w in all_wfo]))
     if avg_trades < 5:
         return (-999.0, -999.0)
+    sharpes = [w["oos_sharpe"] for w in all_wfo]
+    valid_sharpes = [s for s in sharpes if s is not None and not np.isnan(s)]
+    if not valid_sharpes:
+        return (-999.0, -999.0)
     return (
-        float(np.mean([w["oos_sharpe"]  for w in all_wfo])),
-        float(np.mean([w["oos_return"]  for w in all_wfo])),
+        float(np.mean(valid_sharpes)),
+        float(np.mean([w["oos_return"] for w in all_wfo])),
     )
 
 # ── Main task ─────────────────────────────────────────────────────────────────
@@ -1256,7 +1305,9 @@ def run_algofinder(task_id: str, db_path: Path, session_id: str,
     progress(n_trials, n_trials + n_top, "Evaluating top strategies + significance tests…")
 
     for rank, trial in enumerate(top_trials, 1):
-        params   = trial.params
+        # Reconstruct use_X flags — they are NOT stored in trial.params because
+        # they are derived (not suggested) inside the objective function.
+        params   = _reconstruct_params(trial.params, selected, ic_scores)
         strategy = CatalogStrategy(params, selected)
 
         all_wfo  = []
