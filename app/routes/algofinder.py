@@ -30,7 +30,11 @@ def algofinder_view(session_id):
     ic_result = (ic_task.get("result", {})
                  if ic_task and ic_task.get("status") == "done" else {})
 
-    primary_tf = (session.get("timeframes") or ["1h"])[0]
+    session_tfs     = session.get("timeframes") or ["1h"]
+    session_signal_tf = session_tfs[0]
+    session_htf_tfs   = session_tfs[1:]
+
+    primary_tf = session_signal_tf
     catalog    = build_dynamic_catalog(
         current_app.config["PARQUET_DIR"], session_id, primary_tf)
     default_inds = [k for k, v in catalog.items() if v.get("default")]
@@ -40,13 +44,18 @@ def algofinder_view(session_id):
     all_pairs    = m.list_pairs(current_app.config["DB_PATH"], session_id)
     active_pairs = [p for p in all_pairs if not p["excluded"] and p["candle_count"] > 0]
 
+    all_timeframes = ["1m","3m","5m","15m","30m","1h","2h","4h","8h","12h","1d","3d","1w"]
+
     return render_template("algofinder/view.html",
                            session=session, task=task, results=results,
                            path_a_result=path_a_result, ic_result=ic_result,
                            indicator_catalog=catalog,
                            default_indicators=default_inds,
                            active_pairs=active_pairs,
-                           strategy_templates=STRATEGY_TEMPLATES)
+                           strategy_templates=STRATEGY_TEMPLATES,
+                           all_timeframes=all_timeframes,
+                           session_signal_tf=session_signal_tf,
+                           session_htf_tfs=session_htf_tfs)
 
 
 @bp.route("/<session_id>/run", methods=["POST"])
@@ -63,6 +72,13 @@ def run(session_id):
 
     selected_indicators = request.form.getlist("indicators") or DEFAULT_INDICATORS
     selected_pairs      = request.form.getlist("pairs") or []
+
+    # Timeframe override — form values take priority over session defaults
+    _session_tfs  = session.get("timeframes") or ["1h"]
+    signal_tf     = request.form.get("signal_tf") or _session_tfs[0]
+    htf_list      = request.form.getlist("htf_tfs") or _session_tfs[1:]
+    # Deduplicate and ensure signal TF is not in HTF list
+    run_timeframes = [signal_tf] + [tf for tf in htf_list if tf != signal_tf]
 
     # IC analysis results — passed to algofinder for guided sampling
     ic_task   = db.get_latest_task(session_id, "ic_analysis")
@@ -102,7 +118,7 @@ def run(session_id):
             current_app.config["DB_PATH"], session_id, "algofinder",
             run_algofinder_path_a,
             session_id, current_app.config["PARQUET_DIR"],
-            session["timeframes"], session["entry_logic"],
+            run_timeframes, session["entry_logic"],
             analysis_result, n_trials, config,
         )
         flash(f"Path A Algo Finder started — {n_trials} trials tuning your entry filters.", "info")
@@ -113,10 +129,12 @@ def run(session_id):
             current_app.config["DB_PATH"], session_id, "algofinder",
             run_algofinder,
             session_id, current_app.config["PARQUET_DIR"],
-            session["timeframes"], n_trials, config,
+            run_timeframes, n_trials, config,
         )
+        htf_str = " + HTF: " + ", ".join(run_timeframes[1:]) if len(run_timeframes) > 1 else ""
         flash(
-            f"Algo Finder started — {n_trials} trials | Template: {STRATEGY_TEMPLATES.get(template, {}).get('label', template)}"
+            f"Algo Finder started — {n_trials} trials | Signal TF: {signal_tf}{htf_str} | "
+            f"Template: {STRATEGY_TEMPLATES.get(template, {}).get('label', template)}"
             f"{ic_msg}{multi_msg}",
             "info",
         )
