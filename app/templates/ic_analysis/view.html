@@ -77,29 +77,41 @@
 
 <!-- Summary -->
 <div class="row g-3 mb-4">
-  <div class="col-sm-3">
+  <div class="col-sm-2">
     <div class="card caf-card text-center py-3">
       <div class="h4 mb-0 text-info">{{ result.pairs_analyzed }}</div>
-      <small class="text-muted">Pairs Analyzed</small>
+      <small class="text-muted">Pairs</small>
     </div>
   </div>
-  <div class="col-sm-3">
+  <div class="col-sm-2">
     <div class="card caf-card text-center py-3">
       <div class="h4 mb-0 text-info">{{ result.indicators_analyzed }}</div>
-      <small class="text-muted">Indicators Tested</small>
+      <small class="text-muted">Indicators</small>
     </div>
   </div>
-  <div class="col-sm-3">
+  <div class="col-sm-2">
     <div class="card caf-card text-center py-3">
-      <div class="h4 mb-0 text-success">
+      <div class="h4 mb-0 text-warning">{{ result.n_conditions_tested | default(0) }}</div>
+      <small class="text-muted">Conditions</small>
+    </div>
+  </div>
+  <div class="col-sm-2">
+    <div class="card caf-card text-center py-3">
+      <div class="h4 mb-0 text-warning">{{ result.n_combos_tested | default(0) }}</div>
+      <small class="text-muted">Combos</small>
+    </div>
+  </div>
+  <div class="col-sm-2">
+    <div class="card caf-card text-center py-3">
+      <div class="h5 mb-0 text-success" style="font-size:0.85rem">
         {% if result.top_overall %}{{ result.top_overall[0].col }}{% else %}—{% endif %}
       </div>
-      <small class="text-muted">Top Predictor</small>
+      <small class="text-muted">Top Indicator</small>
     </div>
   </div>
-  <div class="col-sm-3">
+  <div class="col-sm-2">
     <div class="card caf-card text-center py-3">
-      <div class="h4 mb-0 text-warning">
+      <div class="h4 mb-0 text-success">
         {% if result.top_overall %}{{ '%.4f' | format(result.top_overall[0].best_ic | abs) }}{% else %}—{% endif %}
       </div>
       <small class="text-muted">Best |IC|</small>
@@ -302,6 +314,187 @@
       </div>
       {% endfor %}
     </div>
+  </div>
+</div>
+{% endif %}
+
+<!-- Condition IC -->
+{% if result.top_conditions %}
+<div class="card caf-card mb-4">
+  <div class="card-header caf-card-header">
+    <i class="bi bi-toggles me-2 text-warning"></i>Condition IC
+    <small class="text-muted ms-2">IC of binary trading conditions — "when this fires, are returns higher?"</small>
+  </div>
+  <div class="table-responsive" style="max-height:400px;overflow-y:auto">
+    <table class="table caf-table table-sm mb-0">
+      <thead class="sticky-top">
+        <tr>
+          <th>#</th>
+          <th>Condition</th>
+          <th>Strength</th>
+          <th>IC (10-bar)</th>
+          <th>Direction</th>
+          <th>Hit Rate</th>
+          <th>Pairs</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in result.top_conditions %}
+        <tr>
+          <td class="text-muted">{{ loop.index }}</td>
+          <td><code class="text-warning small">{{ r.label }}</code></td>
+          <td>
+            {% if r.strength == 'strong' %}<span class="badge bg-success">Strong</span>
+            {% elif r.strength == 'moderate' %}<span class="badge bg-warning text-dark">Moderate</span>
+            {% elif r.strength == 'weak' %}<span class="badge bg-secondary">Weak</span>
+            {% else %}<span class="badge bg-dark border text-muted">Noise</span>{% endif %}
+          </td>
+          <td>
+            <div class="d-flex align-items-center gap-2">
+              <div class="progress" style="width:50px;height:5px">
+                <div class="progress-bar bg-{{ 'success' if r.abs_ic >= 0.1 else 'warning' if r.abs_ic >= 0.05 else 'secondary' }}"
+                     style="width:{{ [r.abs_ic * 500, 100] | min }}%"></div>
+              </div>
+              <span class="fw-semibold {{ 'text-success' if r.abs_ic >= 0.1 else 'text-warning' if r.abs_ic >= 0.05 else 'text-muted' }}">
+                {{ '%.4f' | format(r.ic_10) }}
+              </span>
+            </div>
+          </td>
+          <td><span class="badge {{ 'bg-success' if r.direction == 'bullish' else 'bg-danger' }} small">
+            {{ '↑ BULL' if r.direction == 'bullish' else '↓ BEAR' }}</span></td>
+          <td>
+            <span class="text-muted small">{{ '%.1f' | format(r.hit_rate * 100) }}%</span>
+            {% if r.hit_rate < 0.02 %}<span class="text-danger small ms-1" title="Fires rarely — low sample size">⚠</span>{% endif %}
+          </td>
+          <td class="text-muted small">{{ r.n_pairs }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <div class="card-footer text-muted small py-2">
+    Hit Rate = fraction of bars where condition is TRUE.
+    Conditions with very low hit rate (&lt;2%) may have unreliable IC estimates.
+  </div>
+</div>
+{% endif %}
+
+<!-- Combination IC -->
+{% if result.top_combos %}
+<div class="card caf-card mb-4">
+  <div class="card-header caf-card-header d-flex align-items-center justify-content-between">
+    <div>
+      <i class="bi bi-intersect me-2 text-danger"></i>Combination IC
+      <small class="text-muted ms-2">IC of AND-pairs — "is condition A AND B better than either alone?"</small>
+    </div>
+    <ul class="nav nav-tabs card-header-tabs mb-0" id="comboTabs">
+      <li class="nav-item">
+        <a class="nav-link active py-1 px-2 small" data-bs-toggle="tab" href="#combo-all">All</a>
+      </li>
+      <li class="nav-item">
+        <a class="nav-link py-1 px-2 small" data-bs-toggle="tab" href="#combo-synergistic">
+          Synergistic <span class="badge bg-danger ms-1">{{ result.top_combos_synergistic | length }}</span>
+        </a>
+      </li>
+    </ul>
+  </div>
+  <div class="tab-content">
+    <div class="tab-pane fade show active" id="combo-all">
+      <div class="table-responsive" style="max-height:450px;overflow-y:auto">
+        <table class="table caf-table table-sm mb-0">
+          <thead class="sticky-top">
+            <tr>
+              <th>#</th>
+              <th>Condition A  AND  Condition B</th>
+              <th>Combo IC</th>
+              <th>IC A</th>
+              <th>IC B</th>
+              <th>Synergy</th>
+              <th>Hit Rate</th>
+              <th>Dir</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for r in result.top_combos %}
+            <tr class="{{ 'table-success bg-opacity-10' if r.synergistic else '' }}">
+              <td class="text-muted">{{ loop.index }}</td>
+              <td>
+                <div class="small">
+                  <code class="text-warning">{{ r.label_a }}</code>
+                  <span class="text-muted mx-1">AND</span>
+                  <code class="text-info">{{ r.label_b }}</code>
+                </div>
+                {% if r.synergistic %}<span class="badge bg-success" style="font-size:9px">SYNERGY</span>{% endif %}
+              </td>
+              <td>
+                <span class="fw-semibold {{ 'text-success' if r.abs_ic >= 0.1 else 'text-warning' if r.abs_ic >= 0.05 else 'text-muted' }}">
+                  {{ '%.4f' | format(r.ic_10) }}
+                </span>
+              </td>
+              <td class="text-muted small">{{ '%.4f' | format(r.ic_a) }}</td>
+              <td class="text-muted small">{{ '%.4f' | format(r.ic_b) }}</td>
+              <td>
+                <span class="{{ 'text-success fw-semibold' if r.synergy > 1.05 else 'text-muted' }} small">
+                  {{ '%.2f' | format(r.synergy) }}×
+                </span>
+              </td>
+              <td class="text-muted small">{{ '%.1f' | format(r.hit_rate * 100) }}%</td>
+              <td><span class="badge {{ 'bg-success' if r.direction == 'bullish' else 'bg-danger' }} small">
+                {{ '↑' if r.direction == 'bullish' else '↓' }}</span></td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+    <div class="tab-pane fade" id="combo-synergistic">
+      {% if result.top_combos_synergistic %}
+      <div class="table-responsive">
+        <table class="table caf-table table-sm mb-0">
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Condition A  AND  Condition B</th>
+              <th>Combo IC</th>
+              <th>IC A</th>
+              <th>IC B</th>
+              <th>Synergy</th>
+              <th>Hit Rate</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for r in result.top_combos_synergistic %}
+            <tr>
+              <td class="text-muted">{{ loop.index }}</td>
+              <td>
+                <div class="small">
+                  <code class="text-warning">{{ r.label_a }}</code>
+                  <span class="text-muted mx-1">AND</span>
+                  <code class="text-info">{{ r.label_b }}</code>
+                </div>
+              </td>
+              <td><span class="fw-semibold text-success">{{ '%.4f' | format(r.ic_10) }}</span></td>
+              <td class="text-muted small">{{ '%.4f' | format(r.ic_a) }}</td>
+              <td class="text-muted small">{{ '%.4f' | format(r.ic_b) }}</td>
+              <td><span class="text-success fw-semibold small">{{ '%.2f' | format(r.synergy) }}×</span></td>
+              <td class="text-muted small">{{ '%.1f' | format(r.hit_rate * 100) }}%</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% else %}
+      <p class="text-muted small p-3 mb-0">
+        No synergistic combinations found yet.
+        Synergy &gt; 1.05 means the AND combination beats both individual conditions.
+        Try more pairs or broader data.
+      </p>
+      {% endif %}
+    </div>
+  </div>
+  <div class="card-footer text-muted small py-2">
+    <strong class="text-light">Synergy</strong> = combo |IC| ÷ max(|IC A|, |IC B|).
+    Synergy &gt; 1.0 means the combination is strictly better than either condition alone — use these pairs as SETUP + TRIGGER in your strategies.
   </div>
 </div>
 {% endif %}
