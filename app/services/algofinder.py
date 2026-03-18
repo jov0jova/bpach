@@ -669,174 +669,247 @@ def _inject_signals_to_exec_tf(signal_df: "pd.DataFrame",
 
 # ── Strategy class ────────────────────────────────────────────────────────────
 
+# ── Structured strategy slot definitions ─────────────────────────────────────
+#
+# A strategy is 4 named role-slots that ALL combine with AND:
+#
+#   TREND   — "What direction is the market?" (state condition)
+#   SETUP   — "Is the market set up for entry?" (oscillator / band state)
+#   TRIGGER — "What fires the actual entry?" (1-bar crossover / pattern event)
+#   CONTEXT — "Does the higher TF confirm?" (optional HTF state condition)
+#
+# Optuna picks ONE option per slot.  Thresholds are categorical — only
+# meaningful round levels (20, 30, 35, 40 … not 66.542).
+# Max 4 conditions total.  No OR logic.  No indicator soup.
+
+TREND_SLOT_OPTIONS = [
+    "none",             # no trend filter (mean-reversion mode)
+    "ema20_gt_ema50",   # EMA(20) > EMA(50)   — short-term bull stack
+    "ema50_gt_ema200",  # EMA(50) > EMA(200)  — intermediate bull
+    "price_gt_ema50",   # Close > EMA(50)     — above mid-term MA
+    "price_gt_ema200",  # Close > EMA(200)    — above long-term MA
+    "supertrend_bull",  # Supertrend = Bullish
+    "psar_bull",        # Parabolic SAR = Bullish
+    "ichimoku_bull",    # Price above Ichimoku cloud
+]
+
+SETUP_SLOT_OPTIONS = [
+    "none",             # no setup filter
+    "rsi_lt_30",        # RSI(14) < 30  — deeply oversold
+    "rsi_lt_35",        # RSI(14) < 35  — oversold
+    "rsi_lt_40",        # RSI(14) < 40  — mildly oversold
+    "rsi_gt_50",        # RSI(14) > 50  — bullish momentum zone
+    "stoch_lt_20",      # Stoch %K < 20 — oversold
+    "stoch_lt_30",      # Stoch %K < 30
+    "macd_positive",    # MACD hist > 0 — momentum positive
+    "cci_lt_m100",      # CCI(20) < -100 — oversold
+    "mfi_lt_25",        # MFI(14) < 25  — money flow oversold
+    "mfi_lt_35",        # MFI(14) < 35
+    "bb_below_lower",   # Price below BB Lower(20) — oversold band
+    "adx_gt_20",        # ADX(14) > 20  — trending market
+    "adx_gt_25",        # ADX(14) > 25  — strong trend
+    "vol_spike",        # Volume ratio > 1.5× average
+]
+
+TRIGGER_SLOT_OPTIONS = [
+    "ema20_cross_ema50",   # EMA(20) crosses above EMA(50)
+    "price_cross_ema50",   # Price crosses above EMA(50)
+    "price_cross_ema200",  # Price crosses above EMA(200)
+    "rsi_cross_30",        # RSI(14) crosses above 30
+    "rsi_cross_50",        # RSI(14) crosses above 50
+    "stoch_cross_20",      # Stoch %K crosses above 20
+    "stochrsi_cross_20",   # StochRSI(K) crosses above 20
+    "macd_cross_signal",   # MACD crosses above Signal line
+    "macd_hist_cross_0",   # MACD hist crosses above 0
+    "cci_cross_m100",      # CCI(20) crosses above -100
+    "willr_cross_m50",     # Williams %R crosses above -50
+    "hammer_pattern",      # Hammer / Inverted Hammer
+    "bull_engulf",         # Bullish Engulfing pattern
+    "bb_lower_cross",      # Price crosses above BB Lower(20)
+    "supertrend_flip",     # Supertrend flips from Bear → Bull
+    "ha_3green",           # 3 consecutive Heikin-Ashi green candles
+]
+
+CONTEXT_SLOT_OPTIONS = [
+    "none",                # no HTF filter
+    "htf_ema50_bull",      # HTF Close > HTF EMA(50)
+    "htf_ema200_bull",     # HTF Close > HTF EMA(200)
+    "htf_supertrend_bull", # HTF Supertrend = Bullish
+    "htf_rsi_not_ob",      # HTF RSI(14) < 70 — not overbought
+    "htf_adx_trending",    # HTF ADX(14) > 20 — trend confirmed
+]
+
+EXIT_SLOT_OPTIONS = [
+    "rsi_gt_70",               # RSI(14) > 70 — overbought
+    "rsi_gt_75",               # RSI(14) > 75
+    "rsi_gt_80",               # RSI(14) > 80 — strongly overbought
+    "ema20_cross_below_ema50", # EMA(20) crosses below EMA(50)
+    "supertrend_flip_bear",    # Supertrend flips to Bearish
+    "stoch_gt_80",             # Stoch %K > 80 — overbought
+    "macd_hist_cross_below_0", # MACD hist crosses below 0
+]
+
+
+def _slot_cross(a: pd.Series, b) -> pd.Series:
+    """a crosses above b (scalar or Series).  1-bar event."""
+    if isinstance(b, (int, float)):
+        return (a > b) & (a.shift(1) <= b)
+    return (a > b) & (a.shift(1) <= b.shift(1))
+
+
+def _slot_cross_below(a: pd.Series, b) -> pd.Series:
+    """a crosses below b (scalar or Series).  1-bar event."""
+    if isinstance(b, (int, float)):
+        return (a < b) & (a.shift(1) >= b)
+    return (a < b) & (a.shift(1) >= b.shift(1))
+
+
 class CatalogStrategy(BaseStrategy):
     """
-    Strategy built dynamically from a user-selected subset of INDICATOR_CATALOG.
+    Structured strategy: 4 named role-slots all combined with AND.
 
-    Optuna controls per-indicator:
-      • use_<col>    0/1 — activate this indicator for this trial
-      • thresh_<col> float — threshold (osc / gt / lt / band_pct types only)
+      TREND   — market direction state filter  (optional)
+      SETUP   — oscillator / band state filter (optional)
+      TRIGGER — 1-bar crossover or pattern     (required)
+      CONTEXT — higher-TF confirmation         (optional)
 
-    Cross-conditions are derived automatically — no hardcoded pairs:
-      ≥2 active MAs    → EMA_shorter > EMA_longer   (MA alignment)
-      band_lower + MA  → band_lower  > longest_MA   (floor above trend line)
+    Optuna picks ONE option per slot from curated lists.
+    Thresholds are categorical round numbers — no float soup.
+    Max 4 conditions, always AND.
     """
     name = "CatalogStrategy"
 
-    def __init__(self, params: dict, selected: list):
+    def __init__(self, params: dict, selected=None):
         super().__init__(params)
-        self._selected = selected
+
+    # ── Slot helpers ──────────────────────────────────────────────────────
+
+    @staticmethod
+    def _trend(df: pd.DataFrame, slot: str) -> pd.Series:
+        c = df.columns
+        if slot == "ema20_gt_ema50"   and "EMA_20"  in c and "EMA_50"  in c:
+            return df["EMA_20"] > df["EMA_50"]
+        if slot == "ema50_gt_ema200"  and "EMA_50"  in c and "EMA_200" in c:
+            return df["EMA_50"] > df["EMA_200"]
+        if slot == "price_gt_ema50"   and "EMA_50"  in c:
+            return df["close"] > df["EMA_50"]
+        if slot == "price_gt_ema200"  and "EMA_200" in c:
+            return df["close"] > df["EMA_200"]
+        if slot == "supertrend_bull"  and "SUPERT_dir" in c:
+            return df["SUPERT_dir"] == 1
+        if slot == "psar_bull"        and "PSAR_dir" in c:
+            return df["PSAR_dir"] == 1
+        if slot == "ichimoku_bull"    and "ICH_above_cloud" in c:
+            return df["ICH_above_cloud"] == 1
+        return pd.Series(True, index=df.index)   # "none" or column missing → pass-through
+
+    @staticmethod
+    def _setup(df: pd.DataFrame, slot: str) -> pd.Series:
+        c = df.columns
+        if slot == "rsi_lt_30"      and "RSI_14"       in c: return df["RSI_14"] < 30
+        if slot == "rsi_lt_35"      and "RSI_14"       in c: return df["RSI_14"] < 35
+        if slot == "rsi_lt_40"      and "RSI_14"       in c: return df["RSI_14"] < 40
+        if slot == "rsi_gt_50"      and "RSI_14"       in c: return df["RSI_14"] > 50
+        if slot == "stoch_lt_20"    and "STOCH_K"      in c: return df["STOCH_K"] < 20
+        if slot == "stoch_lt_30"    and "STOCH_K"      in c: return df["STOCH_K"] < 30
+        if slot == "macd_positive"  and "MACD_hist"    in c: return df["MACD_hist"] > 0
+        if slot == "cci_lt_m100"    and "CCI_20"       in c: return df["CCI_20"] < -100
+        if slot == "mfi_lt_25"      and "MFI_14"       in c: return df["MFI_14"] < 25
+        if slot == "mfi_lt_35"      and "MFI_14"       in c: return df["MFI_14"] < 35
+        if slot == "bb_below_lower" and "BB_lower_20"  in c: return df["close"] < df["BB_lower_20"]
+        if slot == "adx_gt_20"      and "ADX_14"       in c: return df["ADX_14"] > 20
+        if slot == "adx_gt_25"      and "ADX_14"       in c: return df["ADX_14"] > 25
+        if slot == "vol_spike"      and "volume_ratio" in c: return df["volume_ratio"] > 1.5
+        return pd.Series(True, index=df.index)   # "none" or column missing → pass-through
+
+    @staticmethod
+    def _trigger(df: pd.DataFrame, slot: str) -> pd.Series:
+        c = df.columns
+        if slot == "ema20_cross_ema50"  and "EMA_20" in c and "EMA_50"  in c:
+            return _slot_cross(df["EMA_20"], df["EMA_50"])
+        if slot == "price_cross_ema50"  and "EMA_50"  in c:
+            return _slot_cross(df["close"], df["EMA_50"])
+        if slot == "price_cross_ema200" and "EMA_200" in c:
+            return _slot_cross(df["close"], df["EMA_200"])
+        if slot == "rsi_cross_30"       and "RSI_14"  in c:
+            return _slot_cross(df["RSI_14"], 30)
+        if slot == "rsi_cross_50"       and "RSI_14"  in c:
+            return _slot_cross(df["RSI_14"], 50)
+        if slot == "stoch_cross_20"     and "STOCH_K" in c:
+            return _slot_cross(df["STOCH_K"], 20)
+        if slot == "stochrsi_cross_20"  and "STOCHRSI_K" in c:
+            return _slot_cross(df["STOCHRSI_K"], 20)
+        if slot == "macd_cross_signal"  and "MACD" in c and "MACD_signal" in c:
+            return _slot_cross(df["MACD"], df["MACD_signal"])
+        if slot == "macd_hist_cross_0"  and "MACD_hist" in c:
+            return _slot_cross(df["MACD_hist"], 0)
+        if slot == "cci_cross_m100"     and "CCI_20"  in c:
+            return _slot_cross(df["CCI_20"], -100)
+        if slot == "willr_cross_m50"    and "WILLR_14" in c:
+            return _slot_cross(df["WILLR_14"], -50)
+        if slot == "hammer_pattern":
+            sig = pd.Series(False, index=df.index)
+            for col in ("CDL_HAMMER", "CDL_INV_HAMMER"):
+                if col in c:
+                    sig |= df[col] > 0
+            return sig
+        if slot == "bull_engulf" and "CDL_ENGULFING" in c:
+            return df["CDL_ENGULFING"] > 0
+        if slot == "bb_lower_cross" and "BB_lower_20" in c:
+            return _slot_cross(df["close"], df["BB_lower_20"])
+        if slot == "supertrend_flip" and "SUPERT_dir" in c:
+            return (df["SUPERT_dir"] == 1) & (df["SUPERT_dir"].shift(1) == -1)
+        if slot == "ha_3green" and "HA_close" in c and "HA_open" in c:
+            green = df["HA_close"] > df["HA_open"]
+            return green & green.shift(1).fillna(False) & green.shift(2).fillna(False)
+        return pd.Series(False, index=df.index)  # column missing → no signal
+
+    @staticmethod
+    def _context(df: pd.DataFrame, slot: str) -> pd.Series:
+        c = df.columns
+        htf_ema50  = [x for x in c if "HTF_" in x and x.endswith("_EMA_50")]
+        htf_ema200 = [x for x in c if "HTF_" in x and x.endswith("_EMA_200")]
+        htf_supert = [x for x in c if "HTF_" in x and x.endswith("_SUPERT_dir")]
+        htf_rsi    = [x for x in c if "HTF_" in x and x.endswith("_RSI_14")]
+        htf_adx    = [x for x in c if "HTF_" in x and x.endswith("_ADX_14")]
+        if slot == "htf_ema50_bull"      and htf_ema50:
+            return df["close"] > df[htf_ema50[0]]
+        if slot == "htf_ema200_bull"     and htf_ema200:
+            return df["close"] > df[htf_ema200[0]]
+        if slot == "htf_supertrend_bull" and htf_supert:
+            return df[htf_supert[0]] == 1
+        if slot == "htf_rsi_not_ob"      and htf_rsi:
+            return df[htf_rsi[0]] < 70
+        if slot == "htf_adx_trending"    and htf_adx:
+            return df[htf_adx[0]] > 20
+        return pd.Series(True, index=df.index)   # "none" or column missing → pass-through
+
+    # ── Signal population ─────────────────────────────────────────────────
 
     def populate_entry_signal(self, df: pd.DataFrame) -> pd.DataFrame:
         p = self.params
-        # trigger_logic controls how oversold/cross/cdl conditions combine:
-        #   "and" → ALL active triggers must fire  (default, strict)
-        #   "or"  → ANY active trigger is enough   (more signals, less overfitting)
-        trigger_logic = p.get("trigger_logic", "and")
-
-        # Two accumulator series: triggers (osc/band/cdl/cross) and filters (ma/trend/htf)
-        trigger_cond = pd.Series(False, index=df.index)  # OR-built
-        filter_cond  = pd.Series(True,  index=df.index)  # AND-built
-        n_triggers   = 0
-
-        active_mas   = []   # (period_int, col) for active "ma" entries
-        active_bands = []   # col names for active "band_lower" entries
-
-        for col in self._selected:
-            if not p.get(f"use_{col}", 0):
-                continue
-            spec = FULL_INDICATOR_CATALOG.get(col)
-            if spec is None:
-                continue
-
-            kind = spec["type"]
-
-            # ── Dynamic crossover conditions (triggers, no precomputed column) ──
-            if kind in ("cross_above", "cross_below"):
-                cross = _cross_cond(df, spec)
-                if cross is not None:
-                    trigger_cond |= cross
-                    n_triggers   += 1
-                continue
-
-            # Regular conditions require the column to exist in df
-            if col not in df.columns:
-                continue
-
-            # ── Trigger conditions (oversold / pattern — combine with OR or AND) ──
-            if kind in ("osc", "band_pct"):
-                c = df[col] < p[f"thresh_{col}"]
-                trigger_cond |= c
-                n_triggers   += 1
-
-            elif kind == "band_lower":
-                c = df["close"] < df[col]
-                trigger_cond |= c
-                n_triggers   += 1
-                active_bands.append(col)
-
-            elif kind == "cdl":
-                trigger_cond |= (df[col] > 0)
-                n_triggers   += 1
-
-            # ── Filter conditions (context/trend — always AND) ──────────────
-            elif kind == "lt":
-                filter_cond &= df[col] < p[f"thresh_{col}"]
-
-            elif kind == "gt":
-                filter_cond &= df[col] > p[f"thresh_{col}"]
-
-            elif kind == "sign":
-                filter_cond &= df[col] > 0
-
-            elif kind == "flag":
-                filter_cond &= df[col] == 1
-
-            elif kind == "ma":
-                filter_cond &= df["close"] > df[col]
-                active_mas.append((_ma_period(col), col))
-
-        # ── Combine trigger group with filter group ───────────────────────────
-        if n_triggers == 0:
-            # No triggers selected — fall back to pure filter logic
-            cond = filter_cond
-        elif trigger_logic == "or":
-            # ANY trigger fires → AND with all filters
-            cond = trigger_cond & filter_cond
-        else:
-            # ALL triggers must fire (AND mode) → AND with filters
-            # Rebuild trigger_cond as AND
-            cond = filter_cond
-            for col in self._selected:
-                if not p.get(f"use_{col}", 0):
-                    continue
-                spec = FULL_INDICATOR_CATALOG.get(col)
-                if spec is None:
-                    continue
-                kind = spec["type"]
-                if kind in ("cross_above", "cross_below"):
-                    cross = _cross_cond(df, spec)
-                    if cross is not None:
-                        cond &= cross
-                elif col not in df.columns:
-                    continue
-                elif kind in ("osc", "band_pct"):
-                    cond &= df[col] < p[f"thresh_{col}"]
-                elif kind == "band_lower":
-                    cond &= df["close"] < df[col]
-                elif kind == "cdl":
-                    cond &= df[col] > 0
-
-        # ── Derived cross-conditions (price-unit indicators) ──────────────
-        # MA alignment: if ≥2 MAs active, require shorter-period > longer-period
-        active_mas.sort()                       # ascending = fastest first
-        if len(active_mas) >= 2:
-            fast_col = active_mas[0][1]         # shortest period (fastest MA)
-            slow_col = active_mas[-1][1]        # longest period  (slowest MA)
-            if fast_col in df.columns and slow_col in df.columns:
-                cond &= df[fast_col] > df[slow_col]
-
-        # Band-vs-MA: if any lower-band + any MA are active,
-        # require band_lower > longest_MA (floor is above the trend line)
-        if active_bands and active_mas:
-            anchor_ma = active_mas[-1][1]       # most conservative = longest period
-            if anchor_ma in df.columns:
-                for band_col in active_bands:
-                    if band_col in df.columns:
-                        cond &= df[band_col] > df[anchor_ma]
-
-        # ── HTF filters ──────────────────────────────────────────────────
-        htf_trend_cols = [c for c in df.columns if c.endswith("_trend_dir")]
-        if p.get("use_htf_trend", 0) and htf_trend_cols:
-            cond &= df[htf_trend_cols[0]] == 1
-
-        htf_supert_cols = [c for c in df.columns if "HTF_" in c and c.endswith("_SUPERT_dir")]
-        if p.get("use_htf_supertrend", 0) and htf_supert_cols:
-            cond &= df[htf_supert_cols[0]] == 1
-
-        htf_rsi_cols = [c for c in df.columns if "HTF_" in c and c.endswith("_RSI_14")]
-        if p.get("use_htf_rsi_filter", 0) and htf_rsi_cols:
-            cond &= df[htf_rsi_cols[0]] < p.get("htf_rsi_max", 60)
-
-        htf_adx_cols = [c for c in df.columns if "HTF_" in c and c.endswith("_ADX_14")]
-        if p.get("use_htf_adx_filter", 0) and htf_adx_cols:
-            cond &= df[htf_adx_cols[0]] > p.get("htf_adx_min", 20)
-
-        htf_ema200_cols = [c for c in df.columns if "HTF_" in c and c.endswith("_EMA_200")]
-        if p.get("use_htf_ema200", 0) and htf_ema200_cols:
-            cond &= df["close"] > df[htf_ema200_cols[0]]
-
-        df["entry_signal"] = cond.astype(int)
+        trend_cond   = self._trend(df,   p.get("trend_slot",   "none"))
+        setup_cond   = self._setup(df,   p.get("setup_slot",   "none"))
+        trigger_cond = self._trigger(df, p.get("trigger_slot", "ema20_cross_ema50"))
+        context_cond = self._context(df, p.get("context_slot", "none"))
+        df["entry_signal"] = (trend_cond & setup_cond & trigger_cond & context_cond).astype(int)
         return df
 
     def populate_exit_signal(self, df: pd.DataFrame) -> pd.DataFrame:
         p = self.params
-        rsi_col = f"RSI_{int(p.get('rsi_exit_period', 14))}"
+        slot = p.get("exit_slot", "rsi_gt_70")
+        c    = df.columns
         cond = pd.Series(False, index=df.index)
-        if rsi_col in df.columns:
-            cond |= df[rsi_col] > p.get("rsi_exit_min", 70)
-        if "ema_20_50_cross" in df.columns:
-            cond |= df["ema_20_50_cross"] == -1
+        if slot == "rsi_gt_70"               and "RSI_14"   in c: cond = df["RSI_14"] > 70
+        elif slot == "rsi_gt_75"             and "RSI_14"   in c: cond = df["RSI_14"] > 75
+        elif slot == "rsi_gt_80"             and "RSI_14"   in c: cond = df["RSI_14"] > 80
+        elif slot == "ema20_cross_below_ema50" and "EMA_20" in c and "EMA_50" in c:
+            cond = _slot_cross_below(df["EMA_20"], df["EMA_50"])
+        elif slot == "supertrend_flip_bear"  and "SUPERT_dir" in c:
+            cond = (df["SUPERT_dir"] == -1) & (df["SUPERT_dir"].shift(1) == 1)
+        elif slot == "stoch_gt_80"           and "STOCH_K"   in c: cond = df["STOCH_K"] > 80
+        elif slot == "macd_hist_cross_below_0" and "MACD_hist" in c:
+            cond = _slot_cross_below(df["MACD_hist"], 0)
         df["exit_signal"] = cond.astype(int)
         return df
 
@@ -844,45 +917,36 @@ class CatalogStrategy(BaseStrategy):
 # ── Strategy templates ────────────────────────────────────────────────────────
 
 STRATEGY_TEMPLATES = {
+    # All templates use the same slot-based search space.
+    # The label is purely informational — Optuna explores all slot combinations.
     "free": {
         "label": "Free Search",
-        "description": "Unconstrained search across all selected indicators.",
-        "indicators": None,
+        "description": "Full slot search: Optuna picks trend, setup, trigger and exit freely.",
         "icon": "bi-shuffle",
     },
     "trend_follow": {
         "label": "Trend Following",
-        "description": "EMA alignment + momentum confirmation. Buy the trend.",
-        "indicators": ["EMA_20", "EMA_50", "EMA_200", "ADX_14", "MACD_hist",
-                       "SUPERT_dir", "RSI_14", "volume_ratio"],
+        "description": "Trend filter + momentum setup + crossover trigger. Buy the trend.",
         "icon": "bi-arrow-up-right",
     },
     "mean_revert": {
         "label": "Mean Reversion",
-        "description": "Oversold bounce from lower band. RSI/Stoch oversold + support.",
-        "indicators": ["RSI_14", "STOCHRSI_K", "BB_pct_20", "BB_lower_20",
-                       "MFI_14", "CCI_20", "WILLR_14", "CMF_20"],
+        "description": "Oversold setup + bounce trigger. RSI / Stoch / BB extremes.",
         "icon": "bi-arrow-left-right",
     },
     "breakout": {
         "label": "Breakout",
-        "description": "Price breaking out with volume confirmation and momentum.",
-        "indicators": ["BB_width_20", "volume_ratio", "ADX_14", "MACD_hist",
-                       "ROC_10", "AO", "SUPERT_dir", "EMA_50"],
+        "description": "Price or MA crossover trigger with ADX / volume confirmation.",
         "icon": "bi-graph-up",
     },
     "momentum": {
         "label": "Momentum",
-        "description": "Strong momentum with trend and volume confirmation.",
-        "indicators": ["RSI_7", "MACD_hist", "AO", "ROC_10", "CMF_20",
-                       "EMA_20", "volume_ratio", "ADX_14"],
+        "description": "MACD / RSI momentum setup + crossover trigger.",
         "icon": "bi-lightning-fill",
     },
     "scalp": {
         "label": "Scalp / Short-term",
-        "description": "Fast oscillators for short-term high-frequency entries.",
-        "indicators": ["RSI_7", "STOCHRSI_K", "BB_pct_20", "MACD_hist",
-                       "NATR_14", "volume_ratio", "EMA_8", "EMA_20"],
+        "description": "Fast oscillator crossovers and candle patterns for short holds.",
         "icon": "bi-clock-history",
     },
 }
@@ -1012,66 +1076,49 @@ def _run_wfo_for_trial(df: "pd.DataFrame", strategy, config: dict,
 
 # ── Optuna objective ──────────────────────────────────────────────────────────
 
+def _sample_slot_params(trial, has_htf: bool = False) -> dict:
+    """
+    Sample all strategy slot choices + risk-management params for one Optuna trial.
+    Called by both single-objective and multi-objective functions.
+    """
+    params = {}
+    # ── Strategy structure (4 role-slots, ONE choice each, always AND) ───────
+    params["trend_slot"]   = trial.suggest_categorical("trend_slot",   TREND_SLOT_OPTIONS)
+    params["setup_slot"]   = trial.suggest_categorical("setup_slot",   SETUP_SLOT_OPTIONS)
+    params["trigger_slot"] = trial.suggest_categorical("trigger_slot", TRIGGER_SLOT_OPTIONS)
+    params["context_slot"] = trial.suggest_categorical(
+        "context_slot",
+        CONTEXT_SLOT_OPTIONS if has_htf else ["none"],
+    )
+    params["exit_slot"]    = trial.suggest_categorical("exit_slot",    EXIT_SLOT_OPTIONS)
+
+    # ── Risk management (SL / TP / Trailing — still optimised per trial) ─────
+    params["sl_mode"]              = trial.suggest_categorical("sl_mode",   ["none", "fixed", "atr"])
+    params["sl_pct"]               = trial.suggest_float("sl_pct",          0.01, 0.08)
+    params["sl_atr_multiplier"]    = trial.suggest_float("sl_atr_multiplier", 1.0, 4.0)
+    params["tp_mode"]              = trial.suggest_categorical("tp_mode",   ["none", "fixed", "atr", "rr"])
+    params["tp_pct"]               = trial.suggest_float("tp_pct",          0.02, 0.15)
+    params["tp_atr_multiplier"]    = trial.suggest_float("tp_atr_multiplier", 2.0, 8.0)
+    params["tp_rr_ratio"]          = trial.suggest_float("tp_rr_ratio",      1.0, 4.0)
+    params["trail_mode"]           = trial.suggest_categorical("trail_mode", ["none", "fixed", "atr"])
+    params["trail_pct"]            = trial.suggest_float("trail_pct",        0.005, 0.05)
+    params["trail_atr_multiplier"] = trial.suggest_float("trail_atr_multiplier", 0.5, 3.0)
+    return params
+
+
 def _objective(trial, dfs: list, config: dict,
-               selected: list, has_htf: bool = False,
+               selected: list = None, has_htf: bool = False,
                ic_scores: dict = None,
                min_oos_trades: int = 5) -> float:
     """
-    Smart single-objective Optuna search.
+    Single-objective Optuna search using structured role-slots.
 
-    Improvements vs. v1:
-    - IC-biased indicator activation: high-IC indicators more likely to be active.
-    - Dynamic TP/SL/trailing also optimised per trial.
-    - Cross-pair generalization reward.
-    - Composite score: Sharpe + log(return) + (PF-1) + coverage bonus.
+    Optuna picks ONE option per slot (trend / setup / trigger / context / exit)
+    from curated lists.  All conditions combine with AND.  No OR soup.
+    Composite score: Sharpe + log(return) + (capped PF - 1) + pair coverage bonus.
     """
-    params = {}
-    params["rsi_exit_period"]  = trial.suggest_categorical("rsi_exit_period", [7, 14, 21])
-    params["rsi_exit_min"]     = trial.suggest_float("rsi_exit_min", 60, 85)
-    params["trigger_logic"]    = trial.suggest_categorical("trigger_logic", ["and", "or"])
-
-    # Dynamic stop/profit params (optimised alongside entry rules)
-    params["sl_mode"]              = trial.suggest_categorical("sl_mode", ["none","fixed","atr"])
-    params["sl_pct"]               = trial.suggest_float("sl_pct", 0.01, 0.08)
-    params["sl_atr_multiplier"]    = trial.suggest_float("sl_atr_multiplier", 1.0, 4.0)
-    params["tp_mode"]              = trial.suggest_categorical("tp_mode", ["none","fixed","atr","rr"])
-    params["tp_pct"]               = trial.suggest_float("tp_pct", 0.02, 0.15)
-    params["tp_atr_multiplier"]    = trial.suggest_float("tp_atr_multiplier", 2.0, 8.0)
-    params["tp_rr_ratio"]          = trial.suggest_float("tp_rr_ratio", 1.0, 4.0)
-    params["trail_mode"]           = trial.suggest_categorical("trail_mode", ["none","fixed","atr"])
-    params["trail_pct"]            = trial.suggest_float("trail_pct", 0.005, 0.05)
-    params["trail_atr_multiplier"] = trial.suggest_float("trail_atr_multiplier", 0.5, 3.0)
-
-    # Per-indicator parameters (IC-biased activation)
-    for col in selected:
-        spec = FULL_INDICATOR_CATALOG.get(col)
-        if spec is None:
-            continue
-        # IC-guided: high |IC| → higher activation probability
-        ic_val = (ic_scores or {}).get(col, 0.0)
-        p_active = 0.3 + min(0.5, ic_val * 5.0)
-        raw = trial.suggest_float(f"p_use_{col}", 0.0, 1.0)
-        params[f"use_{col}"] = int(raw < p_active)
-        if spec["type"] in ("osc", "gt", "lt", "band_pct") and "range" in spec:
-            lo, hi = spec["range"]
-            params[f"thresh_{col}"] = trial.suggest_float(f"thresh_{col}", lo, hi)
-
-    if has_htf:
-        params["use_htf_trend"]      = trial.suggest_categorical("use_htf_trend", [0, 1])
-        params["use_htf_supertrend"] = trial.suggest_categorical("use_htf_supertrend", [0, 1])
-        params["use_htf_rsi_filter"] = trial.suggest_categorical("use_htf_rsi_filter", [0, 1])
-        params["htf_rsi_max"]        = trial.suggest_float("htf_rsi_max", 30, 70)
-        params["use_htf_adx_filter"] = trial.suggest_categorical("use_htf_adx_filter", [0, 1])
-        params["htf_adx_min"]        = trial.suggest_float("htf_adx_min", 15, 40)
-        params["use_htf_ema200"]     = trial.suggest_categorical("use_htf_ema200", [0, 1])
-
-    # Require at least 1 active LTF condition — HTF-only strategies fire on every
-    # bar where the HTF context is satisfied and produce meaningless statistics.
-    n_ltf_active = sum(1 for col in selected if params.get(f"use_{col}", 0))
-    if n_ltf_active == 0:
-        return -999.0
-
-    strategy = CatalogStrategy(params, selected)
+    params   = _sample_slot_params(trial, has_htf=has_htf)
+    strategy = CatalogStrategy(params)
     all_wfo  = []
     for signal_df, exec_df in dfs:
         if len(signal_df) < 100:
@@ -1081,58 +1128,18 @@ def _objective(trial, dfs: list, config: dict,
                                               exec_df=exec_df))
         except Exception:
             continue
-
     return _score_wfo_results(all_wfo, min_oos_trades)
 
 
 def _objective_multi(trial, dfs: list, config: dict,
-                     selected: list, has_htf: bool = False,
+                     selected: list = None, has_htf: bool = False,
                      ic_scores: dict = None) -> tuple:
     """
     Multi-objective: maximise (oos_sharpe, oos_return) simultaneously.
     Returns Pareto-optimal strategies.
     """
-    params = {}
-    params["rsi_exit_period"]  = trial.suggest_categorical("rsi_exit_period", [7, 14, 21])
-    params["rsi_exit_min"]     = trial.suggest_float("rsi_exit_min", 60, 85)
-    params["trigger_logic"]    = trial.suggest_categorical("trigger_logic", ["and", "or"])
-    params["sl_mode"]              = trial.suggest_categorical("sl_mode", ["none","fixed","atr"])
-    params["sl_pct"]               = trial.suggest_float("sl_pct", 0.01, 0.08)
-    params["sl_atr_multiplier"]    = trial.suggest_float("sl_atr_multiplier", 1.0, 4.0)
-    params["tp_mode"]              = trial.suggest_categorical("tp_mode", ["none","fixed","atr","rr"])
-    params["tp_pct"]               = trial.suggest_float("tp_pct", 0.02, 0.15)
-    params["tp_atr_multiplier"]    = trial.suggest_float("tp_atr_multiplier", 2.0, 8.0)
-    params["tp_rr_ratio"]          = trial.suggest_float("tp_rr_ratio", 1.0, 4.0)
-    params["trail_mode"]           = trial.suggest_categorical("trail_mode", ["none","fixed","atr"])
-    params["trail_pct"]            = trial.suggest_float("trail_pct", 0.005, 0.05)
-    params["trail_atr_multiplier"] = trial.suggest_float("trail_atr_multiplier", 0.5, 3.0)
-
-    for col in selected:
-        spec = FULL_INDICATOR_CATALOG.get(col)
-        if spec is None:
-            continue
-        ic_val = (ic_scores or {}).get(col, 0.0)
-        p_active = 0.3 + min(0.5, ic_val * 5.0)
-        raw = trial.suggest_float(f"p_use_{col}", 0.0, 1.0)
-        params[f"use_{col}"] = int(raw < p_active)
-        if spec["type"] in ("osc", "gt", "lt", "band_pct") and "range" in spec:
-            lo, hi = spec["range"]
-            params[f"thresh_{col}"] = trial.suggest_float(f"thresh_{col}", lo, hi)
-
-    if has_htf:
-        params["use_htf_trend"]      = trial.suggest_categorical("use_htf_trend", [0, 1])
-        params["use_htf_supertrend"] = trial.suggest_categorical("use_htf_supertrend", [0, 1])
-        params["use_htf_rsi_filter"] = trial.suggest_categorical("use_htf_rsi_filter", [0, 1])
-        params["htf_rsi_max"]        = trial.suggest_float("htf_rsi_max", 30, 70)
-        params["use_htf_adx_filter"] = trial.suggest_categorical("use_htf_adx_filter", [0, 1])
-        params["htf_adx_min"]        = trial.suggest_float("htf_adx_min", 15, 40)
-        params["use_htf_ema200"]     = trial.suggest_categorical("use_htf_ema200", [0, 1])
-
-    n_ltf_active = sum(1 for col in selected if params.get(f"use_{col}", 0))
-    if n_ltf_active == 0:
-        return (-999.0, -999.0)
-
-    strategy = CatalogStrategy(params, selected)
+    params   = _sample_slot_params(trial, has_htf=has_htf)
+    strategy = CatalogStrategy(params)
     all_wfo  = []
     for signal_df, exec_df in dfs:
         if len(signal_df) < 100:
@@ -1195,14 +1202,12 @@ def run_algofinder(task_id: str, db_path: Path, session_id: str,
     if config is None:
         config = {}
 
-    # Template selection: override indicators if template is set
+    # Template selection — label only, slot search is unconstrained
     template_key = config.get("template", "free")
-    template = STRATEGY_TEMPLATES.get(template_key, STRATEGY_TEMPLATES["free"])
-    if template.get("indicators"):
-        selected = [k for k in template["indicators"] if k in FULL_INDICATOR_CATALOG]
-    else:
-        selected = config.get("selected_indicators") or DEFAULT_INDICATORS
-        selected = [k for k in selected if k in FULL_INDICATOR_CATALOG]
+    template     = STRATEGY_TEMPLATES.get(template_key, STRATEGY_TEMPLATES["free"])
+    # `selected` kept for IC analysis compatibility; not used for strategy generation
+    selected = config.get("selected_indicators") or DEFAULT_INDICATORS
+    selected = [k for k in selected if k in FULL_INDICATOR_CATALOG]
     if not selected:
         selected = DEFAULT_INDICATORS
 
@@ -1399,10 +1404,9 @@ def run_algofinder(task_id: str, db_path: Path, session_id: str,
     progress(n_trials, n_trials + n_top, "Evaluating top strategies + significance tests…")
 
     for rank, trial in enumerate(top_trials, 1):
-        # Reconstruct use_X flags — they are NOT stored in trial.params because
-        # they are derived (not suggested) inside the objective function.
-        params   = _reconstruct_params(trial.params, selected, ic_scores)
-        strategy = CatalogStrategy(params, selected)
+        # With slot-based params all values are persisted via trial.suggest_*
+        params   = dict(trial.params)
+        strategy = CatalogStrategy(params)
 
         all_wfo  = []
         oos_trades_this = []   # all OOS trades from every pair × fold
@@ -1538,70 +1542,133 @@ def run_algofinder(task_id: str, db_path: Path, session_id: str,
 
 # ── Rule description ──────────────────────────────────────────────────────────
 
-def _describe_rules(params: dict, selected: list) -> str:
-    """Convert params dict to human-readable rule description."""
-    trigger_logic = params.get("trigger_logic", "and")
-    trigger_label = "ANY trigger (OR)" if trigger_logic == "or" else "ALL conditions (AND)"
-    lines = [f"ENTRY CONDITIONS  [{trigger_label}]:"]
-    active_mas   = []
-    active_bands = []
+_TREND_LABELS = {
+    "none":             "none — no trend filter",
+    "ema20_gt_ema50":   "EMA(20) > EMA(50)",
+    "ema50_gt_ema200":  "EMA(50) > EMA(200)",
+    "price_gt_ema50":   "Price > EMA(50)",
+    "price_gt_ema200":  "Price > EMA(200)",
+    "supertrend_bull":  "Supertrend = Bullish",
+    "psar_bull":        "Parabolic SAR = Bullish",
+    "ichimoku_bull":    "Price above Ichimoku cloud",
+}
+_SETUP_LABELS = {
+    "none":             "none — no setup filter",
+    "rsi_lt_30":        "RSI(14) < 30  — deeply oversold",
+    "rsi_lt_35":        "RSI(14) < 35  — oversold",
+    "rsi_lt_40":        "RSI(14) < 40  — mildly oversold",
+    "rsi_gt_50":        "RSI(14) > 50  — bullish momentum zone",
+    "stoch_lt_20":      "Stoch %K < 20 — oversold",
+    "stoch_lt_30":      "Stoch %K < 30",
+    "macd_positive":    "MACD Histogram > 0",
+    "cci_lt_m100":      "CCI(20) < -100 — oversold",
+    "mfi_lt_25":        "MFI(14) < 25  — money flow oversold",
+    "mfi_lt_35":        "MFI(14) < 35",
+    "bb_below_lower":   "Price below BB Lower(20) — oversold band",
+    "adx_gt_20":        "ADX(14) > 20  — trending market",
+    "adx_gt_25":        "ADX(14) > 25  — strong trend",
+    "vol_spike":        "Volume ratio > 1.5× average",
+}
+_TRIGGER_LABELS = {
+    "ema20_cross_ema50":   "EMA(20) crosses above EMA(50)",
+    "price_cross_ema50":   "Price crosses above EMA(50)",
+    "price_cross_ema200":  "Price crosses above EMA(200)",
+    "rsi_cross_30":        "RSI(14) crosses above 30 — exits oversold",
+    "rsi_cross_50":        "RSI(14) crosses above 50 — momentum flip",
+    "stoch_cross_20":      "Stoch %K crosses above 20",
+    "stochrsi_cross_20":   "StochRSI(K) crosses above 20",
+    "macd_cross_signal":   "MACD crosses above Signal line",
+    "macd_hist_cross_0":   "MACD Histogram crosses above 0",
+    "cci_cross_m100":      "CCI(20) crosses above -100",
+    "willr_cross_m50":     "Williams %R crosses above -50",
+    "hammer_pattern":      "Hammer / Inverted Hammer candle",
+    "bull_engulf":         "Bullish Engulfing pattern",
+    "bb_lower_cross":      "Price crosses above BB Lower(20)",
+    "supertrend_flip":     "Supertrend flips Bullish",
+    "ha_3green":           "3 consecutive Heikin-Ashi green candles",
+}
+_CONTEXT_LABELS = {
+    "none":                "none — no HTF filter",
+    "htf_ema50_bull":      "[HTF] Price > HTF EMA(50)",
+    "htf_ema200_bull":     "[HTF] Price > HTF EMA(200)",
+    "htf_supertrend_bull": "[HTF] Supertrend = Bullish",
+    "htf_rsi_not_ob":      "[HTF] RSI(14) < 70 — not overbought",
+    "htf_adx_trending":    "[HTF] ADX(14) > 20 — trend confirmed",
+}
+_EXIT_LABELS = {
+    "rsi_gt_70":               "RSI(14) > 70 — overbought",
+    "rsi_gt_75":               "RSI(14) > 75",
+    "rsi_gt_80":               "RSI(14) > 80 — strongly overbought",
+    "ema20_cross_below_ema50": "EMA(20) crosses below EMA(50)",
+    "supertrend_flip_bear":    "Supertrend flips Bearish",
+    "stoch_gt_80":             "Stoch %K > 80 — overbought",
+    "macd_hist_cross_below_0": "MACD Histogram crosses below 0",
+}
 
-    for col in selected:
-        if not params.get(f"use_{col}", 0):
-            continue
-        spec = FULL_INDICATOR_CATALOG.get(col)
-        if not spec:
-            continue
-        kind = spec["type"]
 
-        t_tag = " [trigger]" if trigger_logic == "or" and kind in ("osc", "band_pct", "band_lower", "cdl", "cross_above", "cross_below") else ""
-        if kind in ("osc", "band_pct", "lt"):
-            lines.append(f"  • {col} < {params[f'thresh_{col}']:.4g}{t_tag}")
-        elif kind == "gt":
-            lines.append(f"  • {col} > {params[f'thresh_{col}']:.4g}")
-        elif kind == "sign":
-            lines.append(f"  • {col} > 0")
-        elif kind == "flag":
-            lines.append(f"  • {col} = Bullish")
-        elif kind == "cdl":
-            lines.append(f"  • {spec.get('label', col)} pattern{t_tag}")
-        elif kind == "ma":
-            lines.append(f"  • close > {col}")
-            active_mas.append((_ma_period(col), col))
-        elif kind == "band_lower":
-            lines.append(f"  • close < {col}  (oversold below lower band){t_tag}")
-            active_bands.append(col)
-        elif kind in ("cross_above", "cross_below"):
-            lines.append(f"  • {spec['label']}  [crossover — 1 bar]{t_tag}")
+def _describe_sl_tp(params: dict) -> str:
+    """One-line SL/TP/trail summary for the rules block."""
+    parts = []
+    sl = params.get("sl_mode", "none")
+    if sl == "fixed":
+        parts.append(f"SL {params.get('sl_pct', 0.02) * 100:.1f}%")
+    elif sl == "atr":
+        parts.append(f"SL {params.get('sl_atr_multiplier', 2.0):.1f}×ATR")
+    tp = params.get("tp_mode", "none")
+    if tp == "fixed":
+        parts.append(f"TP {params.get('tp_pct', 0.04) * 100:.1f}%")
+    elif tp == "atr":
+        parts.append(f"TP {params.get('tp_atr_multiplier', 4.0):.1f}×ATR")
+    elif tp == "rr":
+        parts.append(f"TP {params.get('tp_rr_ratio', 2.0):.1f}:1 R:R")
+    trail = params.get("trail_mode", "none")
+    if trail == "fixed":
+        parts.append(f"Trail {params.get('trail_pct', 0.02) * 100:.1f}%")
+    elif trail == "atr":
+        parts.append(f"Trail {params.get('trail_atr_multiplier', 1.5):.1f}×ATR")
+    return "  " + " | ".join(parts) if parts else "  none"
 
-    # Derived cross-conditions
-    active_mas.sort()
-    if len(active_mas) >= 2:
-        lines.append(f"  • {active_mas[0][1]} > {active_mas[-1][1]}  [MA alignment — derived]")
-    if active_bands and active_mas:
-        anchor = active_mas[-1][1]
-        for band_col in active_bands:
-            lines.append(f"  • {band_col} > {anchor}  [floor above trend — derived]")
 
-    # HTF filters
-    if params.get("use_htf_trend"):
-        lines.append("  • [HTF] Price > HTF EMA50 (trend aligned)")
-    if params.get("use_htf_supertrend"):
-        lines.append("  • [HTF] Supertrend Bullish on higher TF")
-    if params.get("use_htf_rsi_filter"):
-        lines.append(f"  • [HTF] RSI < {params.get('htf_rsi_max', 60):.1f} on higher TF")
-    if params.get("use_htf_adx_filter"):
-        lines.append(f"  • [HTF] ADX > {params.get('htf_adx_min', 20):.1f} on higher TF")
-    if params.get("use_htf_ema200"):
-        lines.append("  • [HTF] Price > EMA(200) on higher TF")
+def _describe_rules(params: dict, selected=None) -> str:
+    """
+    Human-readable description of a slot-based strategy.
+
+    Output example:
+        ENTRY  (all conditions AND, entry on trigger bar):
+          [TREND]    EMA(20) > EMA(50)
+          [SETUP]    RSI(14) < 35  — oversold
+          [TRIGGER]  MACD crosses above Signal line  ←
+          [CONTEXT]  [HTF] Price > HTF EMA(50)
+
+        EXIT:
+          RSI(14) > 75
+
+        RISK:
+          SL 2.0×ATR | TP 3.0:1 R:R
+    """
+    trend   = params.get("trend_slot",   "none")
+    setup   = params.get("setup_slot",   "none")
+    trigger = params.get("trigger_slot", "ema20_cross_ema50")
+    context = params.get("context_slot", "none")
+    exit_s  = params.get("exit_slot",    "rsi_gt_70")
+
+    lines = ["ENTRY  (all conditions AND, entry fires on trigger bar):"]
+    if trend != "none":
+        lines.append(f"  [TREND]    {_TREND_LABELS.get(trend, trend)}")
+    if setup != "none":
+        lines.append(f"  [SETUP]    {_SETUP_LABELS.get(setup, setup)}")
+    lines.append(    f"  [TRIGGER]  {_TRIGGER_LABELS.get(trigger, trigger)}  ←")
+    if context != "none":
+        lines.append(f"  [CONTEXT]  {_CONTEXT_LABELS.get(context, context)}")
 
     lines += [
         "",
-        "EXIT CONDITIONS:",
-        f"  • RSI({int(params.get('rsi_exit_period', 14))}) > "
-        f"{params.get('rsi_exit_min', 70):.1f}",
-        "  • EMA(20) crosses below EMA(50)",
+        "EXIT:",
+        f"  {_EXIT_LABELS.get(exit_s, exit_s)}",
     ]
+    sl_line = _describe_sl_tp(params)
+    if sl_line.strip() != "none":
+        lines += ["", "RISK:", sl_line]
     return "\n".join(lines)
 
 
