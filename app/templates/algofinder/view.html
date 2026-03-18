@@ -43,6 +43,24 @@
 
         <div class="mb-3">
           <label class="form-label small fw-semibold">
+            Execution TF
+            <span class="text-muted fw-normal">— trades execute here for realistic pricing (optional)</span>
+          </label>
+          <select name="execution_tf" id="execution_tf_select"
+                  class="form-select caf-input form-select-sm">
+            <option value="">Same as Signal TF (default)</option>
+            {% for tf in all_timeframes %}
+            <option value="{{ tf }}">{{ tf }}</option>
+            {% endfor %}
+          </select>
+          <small class="text-muted d-block mt-1" style="font-size:10px">
+            Set to a faster TF (e.g. 1m) to execute on finer bars while signals stay on Signal TF.
+            Requires that TF data has been downloaded.
+          </small>
+        </div>
+
+        <div class="mb-3">
+          <label class="form-label small fw-semibold">
             Signal TF
             <span class="text-muted fw-normal">— indicators &amp; entry conditions computed here</span>
           </label>

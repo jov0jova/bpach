@@ -613,6 +613,60 @@ def _cross_cond(df: "pd.DataFrame", spec: dict) -> "pd.Series | None":
         return (a_lag >= b_lag) & (a < b)
 
 
+# ── Execution-TF helpers ──────────────────────────────────────────────────────
+
+class _PassThroughStrategy:
+    """
+    No-op strategy used when the backtest runs on the execution TF (e.g. 1m).
+    entry_signal / exit_signal are already forward-filled from the signal TF
+    so we must NOT let _walk_forward_backtest overwrite them.
+    """
+    params = {}
+
+    def populate_entry_signal(self, df: "pd.DataFrame") -> "pd.DataFrame":
+        if "entry_signal" not in df.columns:
+            df["entry_signal"] = 0
+        return df
+
+    def populate_exit_signal(self, df: "pd.DataFrame") -> "pd.DataFrame":
+        if "exit_signal" not in df.columns:
+            df["exit_signal"] = 0
+        return df
+
+    def run(self, df: "pd.DataFrame") -> "pd.DataFrame":
+        return self.populate_exit_signal(self.populate_entry_signal(df))
+
+
+def _inject_signals_to_exec_tf(signal_df: "pd.DataFrame",
+                                exec_df: "pd.DataFrame") -> "pd.DataFrame":
+    """
+    Forward-fill entry/exit signals (and ATR for SL/TP) from signal_df onto
+    exec_df bars.  exec_df keeps its own OHLCV — trades execute at exec TF
+    prices.  No indicators are re-computed on exec_df.
+
+    Uses merge_asof(direction='backward') so each 1m bar inherits the most
+    recent completed signal-TF bar's signals — strictly no lookahead.
+    """
+    ts_col = "timestamp"
+    cols   = [ts_col, "entry_signal", "exit_signal"]
+    for atr_col in ("ATR_14", "ATR_20"):           # bring ATR for SL/TP calc
+        if atr_col in signal_df.columns:
+            cols.append(atr_col)
+
+    sig = signal_df[cols].sort_values(ts_col)
+    exc = exec_df.copy()
+
+    # Drop columns that will be injected so merge doesn't create _x/_y suffixes
+    exc.drop(columns=[c for c in cols if c != ts_col and c in exc.columns],
+             errors="ignore", inplace=True)
+    exc = exc.sort_values(ts_col).reset_index(drop=True)
+
+    merged = pd.merge_asof(exc, sig, on=ts_col, direction="backward")
+    merged["entry_signal"] = merged["entry_signal"].fillna(0).astype(int)
+    merged["exit_signal"]  = merged["exit_signal"].fillna(0).astype(int)
+    return merged.reset_index(drop=True)
+
+
 # ── Strategy class ────────────────────────────────────────────────────────────
 
 class CatalogStrategy(BaseStrategy):
@@ -908,12 +962,32 @@ def _score_wfo_results(all_wfo: list, min_oos_trades: int = 5) -> float:
 
 
 def _run_wfo_for_trial(df: "pd.DataFrame", strategy, config: dict,
-                       params: dict) -> dict:
-    """Run fast WFO for a single df using the trial's TP/SL/trailing params."""
+                       params: dict,
+                       exec_df: "pd.DataFrame | None" = None) -> dict:
+    """
+    Run fast WFO for a single df using the trial's TP/SL/trailing params.
+
+    If exec_df is provided (execution TF, e.g. 1m):
+      - Generate entry/exit signals on df (signal TF)
+      - Forward-fill those signals + ATR onto exec_df via merge_asof
+      - Backtest on exec_df using real 1m OHLCV prices
+      - _PassThroughStrategy ensures WFO doesn't re-run signals on each split
+    """
     from .backtest import _walk_forward_backtest as _wfbt, _simple_backtest
+
+    # Compute signals on signal TF
     enriched = df.copy(deep=False)
     enriched = strategy.populate_entry_signal(enriched)
     enriched = strategy.populate_exit_signal(enriched)
+
+    if exec_df is not None and len(exec_df) >= 50:
+        # Inject signals into execution TF; backtest runs on 1m OHLCV
+        run_df      = _inject_signals_to_exec_tf(enriched, exec_df)
+        run_strategy = _PassThroughStrategy()
+    else:
+        run_df       = enriched
+        run_strategy = strategy
+
     bt_kw = dict(
         initial_capital = config.get("initial_capital", 10_000),
         fee_rate        = config.get("fee_rate", 0.001),
@@ -930,7 +1004,7 @@ def _run_wfo_for_trial(df: "pd.DataFrame", strategy, config: dict,
         trail_pct=params.get("trail_pct", 0.02), trail_atr_period=14,
         trail_atr_multiplier=params.get("trail_atr_multiplier", 1.5),
     )
-    return _wfbt(enriched, strategy,
+    return _wfbt(run_df, run_strategy,
                  n_splits=config.get("wfo_splits", 3),
                  train_ratio=config.get("wfo_train_ratio", 0.7),
                  bt_kwargs=bt_kw, fast_mode=True)
@@ -999,11 +1073,12 @@ def _objective(trial, dfs: list, config: dict,
 
     strategy = CatalogStrategy(params, selected)
     all_wfo  = []
-    for df in dfs:
-        if len(df) < 100:
+    for signal_df, exec_df in dfs:
+        if len(signal_df) < 100:
             continue
         try:
-            all_wfo.append(_run_wfo_for_trial(df, strategy, config, params))
+            all_wfo.append(_run_wfo_for_trial(signal_df, strategy, config, params,
+                                              exec_df=exec_df))
         except Exception:
             continue
 
@@ -1059,11 +1134,12 @@ def _objective_multi(trial, dfs: list, config: dict,
 
     strategy = CatalogStrategy(params, selected)
     all_wfo  = []
-    for df in dfs:
-        if len(df) < 100:
+    for signal_df, exec_df in dfs:
+        if len(signal_df) < 100:
             continue
         try:
-            all_wfo.append(_run_wfo_for_trial(df, strategy, config, params))
+            all_wfo.append(_run_wfo_for_trial(signal_df, strategy, config, params,
+                                              exec_df=exec_df))
         except Exception:
             continue
 
@@ -1150,9 +1226,13 @@ def run_algofinder(task_id: str, db_path: Path, session_id: str,
     if not active:
         active = [p for p in pairs if not p["excluded"] and p["candle_count"] > 0]
 
-    primary_tf = timeframes[0] if timeframes else "1h"
-    higher_tfs = timeframes[1:] if len(timeframes) > 1 else []
+    primary_tf   = timeframes[0] if timeframes else "1h"
+    higher_tfs   = timeframes[1:] if len(timeframes) > 1 else []
+    execution_tf = config.get("execution_tf")          # None = same as signal TF
+    if execution_tf == primary_tf:
+        execution_tf = None                            # no-op when TFs are equal
 
+    # dfs stores (signal_df, exec_df_or_None) tuples
     dfs            = []
     htf_found_flag = [False]
     load_lock      = threading.Lock()
@@ -1182,7 +1262,21 @@ def run_algofinder(task_id: str, db_path: Path, session_id: str,
         if pair_htf_found:
             with load_lock:
                 htf_found_flag[0] = True
-        return df
+
+        # Load execution TF (e.g. 1m) — raw OHLCV only, no indicator computation
+        exec_df = None
+        if execution_tf:
+            exec_path = parquet_path(parquet_dir, session_id, symbol, execution_tf)
+            if exec_path.exists():
+                try:
+                    exec_df = pd.read_parquet(exec_path)
+                    if len(exec_df) < 50:
+                        exec_df = None
+                except Exception as e:
+                    logger.warning("AlgoFinder exec TF load %s %s: %s",
+                                   symbol, execution_tf, e)
+
+        return (df, exec_df)
 
     sample_pairs = active[:config.get("max_pairs", 30)]
     workers = min((os.cpu_count() or 4) * 4, len(sample_pairs))
@@ -1200,7 +1294,7 @@ def run_algofinder(task_id: str, db_path: Path, session_id: str,
         return
 
     # Detect dominant regime across pairs for regime-aware reporting
-    regimes = [_detect_regime(df) for df in dfs[:10]]
+    regimes = [_detect_regime(sig_df) for sig_df, _ in dfs[:10]]
     dominant_regime = max(set(regimes), key=regimes.count) if regimes else "all"
 
     ic_guided = bool(ic_scores)
@@ -1313,13 +1407,12 @@ def run_algofinder(task_id: str, db_path: Path, session_id: str,
         all_wfo  = []
         oos_trades_this = []   # all OOS trades from every pair × fold
 
-        for df in dfs:
+        for signal_df, exec_df in dfs:
             try:
-                wfo_r = _run_wfo_for_trial(df, strategy, config, params)
+                wfo_r = _run_wfo_for_trial(signal_df, strategy, config, params,
+                                           exec_df=exec_df)
                 all_wfo.append(wfo_r)
-                # Collect OOS trade pnls for permutation test
-                # _run_wfo_for_trial calls _walk_forward_backtest which uses fast_mode
-                # We need the actual trade list. Re-run in non-fast mode for top 3 only.
+                # Collect OOS trade pnls for permutation test (top 3 only)
                 if rank <= 3:
                     try:
                         bt_kw = dict(
@@ -1329,7 +1422,9 @@ def run_algofinder(task_id: str, db_path: Path, session_id: str,
                             position_size=config.get("position_size", 0.1),
                             fast_mode=False,
                         )
-                        enriched = strategy.run(df.copy())
+                        enriched = strategy.run(signal_df.copy())
+                        if exec_df is not None and len(exec_df) >= 50:
+                            enriched = _inject_signals_to_exec_tf(enriched, exec_df)
                         if "entry_signal" in enriched.columns:
                             bt_r = _simple_backtest(enriched, **bt_kw)
                             oos_trades_this.extend(bt_r.get("trades_list", []))
@@ -1584,20 +1679,14 @@ def _path_a_objective(trial, dfs: list, config: dict,
     strategy = PathAStrategy(params, condition_code, indicator_filters)
     all_wfo  = []
 
-    for df in dfs:
-        if len(df) < 100:
+    for signal_df, exec_df in dfs:
+        if len(signal_df) < 100:
             continue
-        enriched = strategy.run(df.copy())
-        wfo = _walk_forward_backtest(
-            enriched, strategy,
-            n_splits=config.get("wfo_splits", 3),
-            train_ratio=config.get("wfo_train_ratio", 0.7),
-            initial_capital=config.get("initial_capital", 10_000),
-            fee_rate=config.get("fee_rate", 0.001),
-            slippage=config.get("slippage", 0.0005),
-            position_size=config.get("position_size", 0.1),
-        )
-        all_wfo.append(wfo)
+        try:
+            all_wfo.append(_run_wfo_for_trial(signal_df, strategy, config, params,
+                                              exec_df=exec_df))
+        except Exception:
+            continue
 
     if not all_wfo:
         return -999.0
@@ -1639,9 +1728,13 @@ def run_algofinder_path_a(task_id: str, db_path: Path, session_id: str,
 
     pairs  = m.list_pairs(db_path, session_id)
     active = [p for p in pairs if not p["excluded"] and p["candle_count"] > 0]
-    primary_tf = timeframes[0] if timeframes else "1h"
-    higher_tfs = timeframes[1:] if len(timeframes) > 1 else []
+    primary_tf   = timeframes[0] if timeframes else "1h"
+    higher_tfs   = timeframes[1:] if len(timeframes) > 1 else []
+    execution_tf = config.get("execution_tf")
+    if execution_tf == primary_tf:
+        execution_tf = None
 
+    # dfs stores (signal_df, exec_df_or_None) tuples
     dfs = []
 
     def _load_pair_a(pair: dict):
@@ -1664,7 +1757,17 @@ def run_algofinder_path_a(task_id: str, db_path: Path, session_id: str,
                 df = inject_htf_features(df, htf_df, htf, strat)
             except Exception as e:
                 logger.warning("PathA HTF inject %s %s: %s", symbol, htf, e)
-        return df
+        exec_df = None
+        if execution_tf:
+            exec_path = parquet_path(parquet_dir, session_id, symbol, execution_tf)
+            if exec_path.exists():
+                try:
+                    exec_df = pd.read_parquet(exec_path)
+                    if len(exec_df) < 50:
+                        exec_df = None
+                except Exception:
+                    pass
+        return (df, exec_df)
 
     workers_a = min((os.cpu_count() or 4) * 4, len(active[:20]))
     with ThreadPoolExecutor(max_workers=workers_a) as exe:
@@ -1730,18 +1833,12 @@ def run_algofinder_path_a(task_id: str, db_path: Path, session_id: str,
         strategy = PathAStrategy(params, condition_code, indicator_filters)
 
         all_wfo = []
-        for df in dfs:
-            enriched = strategy.run(df.copy())
-            wfo = _walk_forward_backtest(
-                enriched, strategy,
-                n_splits=config.get("wfo_splits", 3),
-                train_ratio=config.get("wfo_train_ratio", 0.7),
-                initial_capital=config.get("initial_capital", 10_000),
-                fee_rate=config.get("fee_rate", 0.001),
-                slippage=config.get("slippage", 0.0005),
-                position_size=config.get("position_size", 0.1),
-            )
-            all_wfo.append(wfo)
+        for signal_df, exec_df in dfs:
+            try:
+                all_wfo.append(_run_wfo_for_trial(signal_df, strategy, config, params,
+                                                  exec_df=exec_df))
+            except Exception:
+                continue
 
         def avg(key):
             vals = [w[key] for w in all_wfo]

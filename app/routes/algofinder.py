@@ -80,6 +80,11 @@ def run(session_id):
     # Deduplicate and ensure signal TF is not in HTF list
     run_timeframes = [signal_tf] + [tf for tf in htf_list if tf != signal_tf]
 
+    # Execution TF — faster TF for realistic entry/exit pricing (e.g. 1m)
+    execution_tf = request.form.get("execution_tf") or None
+    if execution_tf == signal_tf or execution_tf == "":
+        execution_tf = None
+
     # IC analysis results — passed to algofinder for guided sampling
     ic_task   = db.get_latest_task(session_id, "ic_analysis")
     ic_result = (ic_task.get("result", {})
@@ -101,6 +106,7 @@ def run(session_id):
         "min_oos_trades":      int(request.form.get("min_oos_trades", 5)),
         "n_jobs":              int(request.form.get("n_jobs", 2)),
         "max_pairs":           int(request.form.get("max_pairs", 30)),
+        "execution_tf":        execution_tf,
     }
 
     if mode == "path_a" and session.get("entry_logic"):
