@@ -180,8 +180,8 @@ def _ic_for_series(series: pd.Series, forward_returns: dict,
             step = max(1, len(aligned) // 20)
             roll_ics = [v for v in rolling_corr.iloc[::step].tolist() if not np.isnan(v)]
             if len(roll_ics) >= 3:
-                ic_mean = float(np.mean(roll_ics))
-                ic_std  = float(np.std(roll_ics))
+                ic_mean = float(np.nanmean(roll_ics))
+                ic_std  = float(np.nanstd(roll_ics))
                 result["ic_mean"]         = round(ic_mean, 4)
                 result["ic_std"]          = round(ic_std, 4)
                 result["icir"]            = round(ic_mean / ic_std, 3) if ic_std > 1e-6 else 0.0
@@ -417,7 +417,7 @@ def run_ic_analysis(task_id: str, db_path: Path, session_id: str,
         for period in FORWARD_PERIODS:
             vals = period_data.get(f"ic_{period}", [])
             if vals:
-                avg = float(np.mean(vals))
+                avg = float(np.nanmean(vals))
                 row[f"ic_{period}"] = round(avg, 4)
                 valid_ics[period]   = avg
             else:
@@ -426,10 +426,10 @@ def run_ic_analysis(task_id: str, db_path: Path, session_id: str,
             continue
 
         icir_vals = period_data.get("icir_list", [])
-        row["icir"] = round(float(np.mean(icir_vals)), 3) if icir_vals else None
+        row["icir"] = round(float(np.nanmean(icir_vals)), 3) if icir_vals else None
 
         pos_pct = period_data.get("ic_positive_pct_list", [])
-        row["ic_positive_pct"] = round(float(np.mean(pos_pct)), 3) if pos_pct else None
+        row["ic_positive_pct"] = round(float(np.nanmean(pos_pct)), 3) if pos_pct else None
 
         abs_ics  = {p: abs(v) for p, v in valid_ics.items()}
         best_p   = max(abs_ics, key=abs_ics.get)
@@ -440,7 +440,7 @@ def run_ic_analysis(task_id: str, db_path: Path, session_id: str,
 
         if col in regime_ics:
             row["regime_ic"] = {
-                regime: round(float(np.mean(vals)), 4)
+                regime: round(float(np.nanmean(vals)), 4)
                 for regime, vals in regime_ics[col].items() if vals
             }
             if row["regime_ic"]:
@@ -468,8 +468,8 @@ def run_ic_analysis(task_id: str, db_path: Path, session_id: str,
         hr_vals   = data.get("hit_rate", [])
         if not ic_vals:
             continue
-        avg_ic   = float(np.mean(ic_vals))
-        avg_hr   = float(np.mean(hr_vals))
+        avg_ic   = float(np.nanmean(ic_vals))
+        avg_hr   = float(np.nanmean(hr_vals))
         cond_results.append({
             "label":     label,
             "ic_10":     round(avg_ic, 4),
@@ -495,10 +495,10 @@ def run_ic_analysis(task_id: str, db_path: Path, session_id: str,
         icb_vals = data.get("ic_b", [])
         if len(ic_vals) < 2:   # need at least 2 pairs for a reliable estimate
             continue
-        avg_ic   = float(np.mean(ic_vals))
-        avg_hr   = float(np.mean(hr_vals))
-        avg_ica  = float(np.mean(ica_vals))
-        avg_icb  = float(np.mean(icb_vals))
+        avg_ic   = float(np.nanmean(ic_vals))
+        avg_hr   = float(np.nanmean(hr_vals))
+        avg_ica  = float(np.nanmean(ica_vals))
+        avg_icb  = float(np.nanmean(icb_vals))
         best_ind = max(abs(avg_ica), abs(avg_icb))
         synergy  = abs(avg_ic) / best_ind if best_ind > 1e-6 else 0.0
         combo_results.append({
