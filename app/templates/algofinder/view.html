@@ -36,6 +36,68 @@
 
     <form method="post" action="{{ url_for('algofinder.run', session_id=session.id) }}">
 
+    <!-- Timeframes -->
+    <div class="card caf-card mb-3">
+      <div class="card-header caf-card-header"><i class="bi bi-clock me-2"></i>Timeframes</div>
+      <div class="card-body">
+
+        <div class="mb-3">
+          <label class="form-label small fw-semibold">
+            Execution TF
+            <span class="text-muted fw-normal">— trades execute here for realistic pricing (optional)</span>
+          </label>
+          <select name="execution_tf" id="execution_tf_select"
+                  class="form-select caf-input form-select-sm">
+            <option value="">Same as Signal TF (default)</option>
+            {% for tf in all_timeframes %}
+            <option value="{{ tf }}">{{ tf }}</option>
+            {% endfor %}
+          </select>
+          <small class="text-muted d-block mt-1" style="font-size:10px">
+            Set to a faster TF (e.g. 1m) to execute on finer bars while signals stay on Signal TF.
+            Requires that TF data has been downloaded.
+          </small>
+        </div>
+
+        <div class="mb-3">
+          <label class="form-label small fw-semibold">
+            Signal TF
+            <span class="text-muted fw-normal">— indicators &amp; entry conditions computed here</span>
+          </label>
+          <select name="signal_tf" id="signal_tf_select"
+                  class="form-select caf-input form-select-sm"
+                  onchange="updateHTFOptions()">
+            {% for tf in all_timeframes %}
+            <option value="{{ tf }}" {% if tf == session_signal_tf %}selected{% endif %}>{{ tf }}</option>
+            {% endfor %}
+          </select>
+        </div>
+
+        <div>
+          <label class="form-label small fw-semibold">
+            Higher TFs
+            <span class="text-muted fw-normal">— context / trend filters (HTF)</span>
+          </label>
+          <div class="d-flex flex-wrap gap-2" id="htf_checkboxes">
+            {% for tf in all_timeframes %}
+            <div class="form-check htf-option mb-0" data-tf="{{ tf }}" style="min-width:52px">
+              <input class="form-check-input" type="checkbox" name="htf_tfs"
+                     value="{{ tf }}" id="htf_{{ tf }}"
+                     {% if tf in session_htf_tfs %}checked{% endif %}
+                     style="width:12px;height:12px">
+              <label class="form-check-label" for="htf_{{ tf }}"
+                     style="font-size:12px">{{ tf }}</label>
+            </div>
+            {% endfor %}
+          </div>
+          <small class="text-muted d-block mt-1" style="font-size:10px">
+            Only TFs with downloaded data will be used. Options ≤ Signal TF are hidden.
+          </small>
+        </div>
+
+      </div>
+    </div>
+
     <!-- Strategy Template -->
     <div class="card caf-card mb-3">
       <div class="card-header caf-card-header"><i class="bi bi-layout-text-sidebar me-2"></i>Strategy Template</div>
@@ -420,6 +482,26 @@
 
 {% block scripts %}
 <script>
+// ── Timeframe helpers ────────────────────────────────────────────────────────
+const TF_ORDER = ['1m','3m','5m','15m','30m','1h','2h','4h','8h','12h','1d','3d','1w'];
+
+function updateHTFOptions() {
+  const signalTf  = document.getElementById('signal_tf_select').value;
+  const signalIdx = TF_ORDER.indexOf(signalTf);
+  document.querySelectorAll('.htf-option').forEach(el => {
+    const tfIdx = TF_ORDER.indexOf(el.dataset.tf);
+    if (tfIdx <= signalIdx) {
+      el.style.display = 'none';
+      el.querySelector('input').checked = false;
+    } else {
+      el.style.display = '';
+    }
+  });
+}
+
+document.addEventListener('DOMContentLoaded', updateHTFOptions);
+
+// ── Indicator / pair helpers ─────────────────────────────────────────────────
 function setAllIndicators(checked) {
   document.querySelectorAll('.ind-check').forEach(cb => cb.checked = checked);
 }
